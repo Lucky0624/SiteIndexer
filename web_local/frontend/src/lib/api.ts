@@ -44,7 +44,7 @@ export const api = {
 
   // IndexNow (Bing)
   getIndexNowConfig: () => req<any>("GET", "/api/indexnow/config"),
-  saveIndexNowConfig: (key: string) => req<any>("POST", "/api/indexnow/config", { key }),
+  saveIndexNowConfig: (key: string, keyLocation: string) => req<any>("POST", "/api/indexnow/config", { key, keyLocation }),
   submitBingStreamUrl: (name: string) => `${BASE}/api/sites/${name}/submit-bing/stream`,
 
   // SSE URLs (opened by EventSource, not fetch)

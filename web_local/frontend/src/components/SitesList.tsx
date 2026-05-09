@@ -53,7 +53,7 @@ export default function SitesList({ navigate }: Props) {
     <div className="p-8 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white">{t("sites.title")}</h1>
+          <h1 className="text-2xl font-bold text-slate-800 dark:text-white">{t("sites.title")}</h1>
           <p className="text-sm text-slate-500 mt-1">{t("sites.subtitle")}</p>
         </div>
         <button
@@ -65,9 +65,9 @@ export default function SitesList({ navigate }: Props) {
       </div>
 
       {sites.length === 0 ? (
-        <div className="border border-dashed border-white/10 rounded-2xl p-20 text-center bg-slate-900/30 backdrop-blur-xl">
+        <div className="border border-dashed border-slate-300 dark:border-white/10 rounded-2xl p-20 text-center bg-white/60 dark:bg-slate-900/30 backdrop-blur-xl">
           <div className="text-5xl mb-4">🔍</div>
-          <p className="text-lg font-medium text-slate-300 mb-2">{t("sites.empty")}</p>
+          <p className="text-lg font-medium text-slate-700 dark:text-slate-300 mb-2">{t("sites.empty")}</p>
           <p className="text-sm text-slate-500">{t("sites.empty_hint")}</p>
         </div>
       ) : (
@@ -78,11 +78,11 @@ export default function SitesList({ navigate }: Props) {
               <div
                 key={site.name}
                 onClick={() => navigate({ name: "site", site: site.name })}
-                className="group flex items-center justify-between gap-4 rounded-2xl border border-white/10 px-6 py-5 cursor-pointer bg-slate-900/50 backdrop-blur-xl shadow-lg hover:shadow-violet-500/10 hover:border-violet-500/40 hover:bg-slate-800/60 transition-all duration-300"
+                className="group flex items-center justify-between gap-4 rounded-2xl border border-slate-200 dark:border-white/10 px-6 py-5 cursor-pointer bg-white/80 dark:bg-slate-900/50 backdrop-blur-xl shadow-lg hover:shadow-violet-500/10 hover:border-violet-500/40 hover:bg-slate-50/80 dark:hover:bg-slate-800/60 transition-all duration-300"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-3 mb-1">
-                    <p className="font-semibold text-white text-base truncate">{site.name}</p>
+                    <p className="font-semibold text-slate-800 dark:text-white text-base truncate">{site.name}</p>
                     {site.urls_pending === 0 && site.urls_total > 0 && (
                       <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
                         {t("sites.all_done")}
@@ -98,7 +98,7 @@ export default function SitesList({ navigate }: Props) {
 
                   {/* Progress bar */}
                   <div className="flex items-center gap-3">
-                    <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                    <div className="flex-1 h-1.5 bg-slate-200 dark:bg-white/5 rounded-full overflow-hidden">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-500"
                         style={{ width: `${pct}%` }}
@@ -111,11 +111,11 @@ export default function SitesList({ navigate }: Props) {
                 <div className="flex items-center gap-3 shrink-0">
                   <button
                     onClick={(e) => handleDelete(e, site.name)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium border border-white/10 bg-transparent text-slate-500 hover:border-red-500/40 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 bg-transparent text-slate-500 hover:border-red-500/40 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all"
                   >
                     {t("sites.delete")}
                   </button>
-                  <span className="text-slate-600 group-hover:text-violet-400 transition-colors text-lg">→</span>
+                  <span className="text-slate-400 dark:text-slate-600 group-hover:text-violet-500 dark:group-hover:text-violet-400 transition-colors text-lg">→</span>
                 </div>
               </div>
             );

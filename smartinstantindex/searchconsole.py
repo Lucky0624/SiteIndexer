@@ -5,7 +5,7 @@ from urllib.parse import quote
 import httplib2
 from oauth2client.service_account import ServiceAccountCredentials
 
-from smartinstantindex.utils import APP_LOGGER
+from smartinstantindex.utils import APP_LOGGER, parse_proxy_info
 
 # Requires "Google Search Console API" enabled in GCP project
 # (separate from "Web Search Indexing API")
@@ -13,44 +13,18 @@ SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
 BASE_URL = "https://www.googleapis.com/webmasters/v3/sites"
 
 
-def _get_proxy_info(proxy=None):
-    if not proxy:
-        return None
-    import socks
-    proxy_type = socks.PROXY_TYPE_HTTP
-    if proxy.startswith("socks5"):
-        proxy_type = socks.PROXY_TYPE_SOCKS5
-    
-    clean_proxy = proxy.replace("http://", "").replace("https://", "").replace("socks5://", "")
-    if "@" in clean_proxy:
-        auth, host_port = clean_proxy.split("@")
-        username, password = auth.split(":")
-        host, port = host_port.split(":")
-    else:
-        host, port = clean_proxy.split(":")
-        username, password = None, None
-        
-    return httplib2.ProxyInfo(
-        proxy_type=proxy_type,
-        proxy_host=host,
-        proxy_port=int(port),
-        proxy_user=username,
-        proxy_pass=password
-    )
-
-
 def _make_http(credentials_json: str, proxy=None):
     credentials = ServiceAccountCredentials.from_json_keyfile_name(
         credentials_json, scopes=SCOPES
     )
-    return credentials.authorize(httplib2.Http(proxy_info=_get_proxy_info(proxy)))
+    return credentials.authorize(httplib2.Http(proxy_info=parse_proxy_info(proxy)))
 
 
 def _make_http_from_dict(credentials_dict: dict, proxy=None):
     credentials = ServiceAccountCredentials.from_json_keyfile_dict(
         credentials_dict, scopes=SCOPES
     )
-    return credentials.authorize(httplib2.Http(proxy_info=_get_proxy_info(proxy)))
+    return credentials.authorize(httplib2.Http(proxy_info=parse_proxy_info(proxy)))
 
 
 def list_gsc_properties(credentials_json: str, proxy=None) -> list:

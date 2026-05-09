@@ -296,7 +296,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   }
 
   if (!site) return (
-    <div className="flex items-center justify-center h-full text-sm" style={{ color: "var(--color-muted)" }}>
+    <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
       {t("sites.loading")}
     </div>
   );
@@ -313,33 +313,26 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         <div>
           <button
             onClick={() => navigate({ name: "sites" })}
-            className="text-xs mb-1 block"
-            style={{ color: "var(--color-muted)" }}
+            className="text-xs mb-1 block text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
           >
             {t("detail.back")}
           </button>
-          <h1 className="text-xl font-semibold">{site.name}</h1>
-          <p className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>{site.sitemap_url}</p>
+          <h1 className="text-xl font-semibold text-slate-800 dark:text-white">{site.name}</h1>
+          <p className="text-xs mt-0.5 text-slate-500 dark:text-slate-400">{site.sitemap_url}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0 pt-5">
-          <button
-            onClick={() => setShowEdit(true)}
-            className="px-4 py-2 rounded-lg text-sm border"
-            style={{ borderColor: "var(--color-rim)", color: "var(--color-muted)" }}
-            onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = "#e6edf3")}
-            onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = "var(--color-muted)")}
-          >
-            编辑
+          <button onClick={() => setShowEdit(true)} className="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-white/5 hover:text-slate-800 dark:hover:text-white transition-all" title={t("detail.edit")}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
         </div>
       </div>
 
       {/* Tabs Navigation */}
-      <div className="flex space-x-1 rounded-xl bg-slate-900/40 p-1 backdrop-blur-md border border-white/5 w-max shadow-sm">
+      <div className="flex space-x-1 rounded-xl bg-slate-100 dark:bg-slate-900/40 p-1 backdrop-blur-md border border-slate-200 dark:border-white/5 w-max shadow-sm">
         <button
           onClick={() => setActiveTab("google")}
           className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 ${
-            activeTab === "google" ? "bg-slate-800 text-white shadow-md border border-white/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            activeTab === "google" ? "bg-white dark:bg-slate-800 text-slate-800 dark:text-white shadow-md border border-slate-200 dark:border-white/10" : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-white/5"
           }`}
         >
           {t("detail.tab_google")}
@@ -347,7 +340,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         <button
           onClick={() => setActiveTab("bing")}
           className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 ${
-            activeTab === "bing" ? "bg-slate-800 text-white shadow-md border border-white/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            activeTab === "bing" ? "bg-white dark:bg-slate-800 text-slate-800 dark:text-white shadow-md border border-slate-200 dark:border-white/10" : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-white/5"
           }`}
         >
           {t("detail.tab_bing")}
@@ -366,29 +359,22 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Google Actions */}
-            <div className="rounded-2xl border border-white/10 p-5 space-y-4 bg-slate-900/60 backdrop-blur-xl shadow-xl">
-              <h2 className="text-sm font-medium text-slate-200 mb-2">Google API 提交与同步</h2>
-              <p className="text-xs text-slate-400 mb-4">通过 Google Indexing API 批量提交网址，或从 Google Search Console 同步最新收录状态。</p>
+            <div className="rounded-2xl border border-slate-200 dark:border-white/10 p-5 space-y-4 bg-white/80 dark:bg-slate-900/60 backdrop-blur-xl shadow-xl">
+              <h2 className="text-sm font-medium text-slate-800 dark:text-slate-200 mb-2">{t("detail.google_title")}</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">{t("detail.google_desc")}</p>
               <div className="flex flex-wrap gap-3">
                 {panel.running ? (
                   <button
                     onClick={handleStop}
-                    className="px-4 py-2 rounded-lg text-sm font-medium"
-                    style={{ background: "var(--color-danger)", color: "#fff" }}
+                    className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500 hover:bg-red-600 text-white transition-colors"
                   >
-                    停止
+                    {t("detail.stop")}
                   </button>
                 ) : (
                   <button
                     onClick={handleRun}
                     disabled={site.credentials?.length === 0 || urlAction}
-                    className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-40"
-                    style={{ background: "var(--color-accent)", color: "#fff" }}
-                    onMouseEnter={(e) => {
-                      if (site.credentials?.length > 0 && !urlAction)
-                        (e.currentTarget as HTMLElement).style.background = "var(--color-accent-hover)";
-                    }}
-                    onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--color-accent)")}
+                    className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-40 bg-violet-600 hover:bg-violet-500 text-white transition-colors"
                   >
                     {t("detail.run")}
                   </button>
@@ -401,21 +387,21 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
 
             {/* Quota bars */}
             {site.quota?.length > 0 && (
-              <div className="rounded-2xl border border-white/10 p-5 space-y-4 bg-slate-900/60 backdrop-blur-xl shadow-xl">
-                <p className="text-sm font-medium">今日配额</p>
+              <div className="rounded-2xl border border-slate-200 dark:border-white/10 p-5 space-y-4 bg-white/80 dark:bg-slate-900/60 backdrop-blur-xl shadow-xl">
+                <p className="text-sm font-medium text-slate-800 dark:text-white">{t("detail.quota_today")}</p>
                 <div className="space-y-4 max-h-32 overflow-y-auto pr-2">
                   {site.quota.map((q: any) => (
                     <div key={q.credentials_file}>
-                      <div className="flex justify-between text-xs mb-1.5" style={{ color: "var(--color-muted)" }}>
-                        <span className="font-mono truncate mr-2" title={q.credentials_name}>{q.credentials_name}</span>
+                      <div className="flex justify-between text-xs mb-1.5 text-slate-500 dark:text-slate-400">
+                        <span className="font-mono truncate mr-2 text-slate-600 dark:text-slate-300" title={q.credentials_name}>{q.credentials_name}</span>
                         <span className="shrink-0" style={{
                           color: q.remaining === 0 ? "var(--color-danger)" :
                             q.remaining < 50 ? "var(--color-warn)" : "var(--color-success)"
                         }}>
-                          {q.used} / {q.limit} 已使用 · {q.remaining} 剩余
+                          {q.used} / {q.limit} {t("settings.urls_per_day").replace("200 个 URL", "").replace("200 URLs per day", "used")} · {q.remaining} {t("detail.urls")} 剩余
                         </span>
                       </div>
-                      <div className="rounded-full h-1.5" style={{ background: "var(--color-rim)" }}>
+                      <div className="rounded-full h-1.5 bg-slate-200 dark:bg-white/10">
                         <div
                           className="h-1.5 rounded-full transition-all"
                           style={{
@@ -438,10 +424,10 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Bing Actions */}
-            <div className="rounded-2xl border border-white/10 p-5 bg-slate-900/60 backdrop-blur-xl shadow-xl flex flex-col justify-between">
+            <div className="rounded-2xl border border-slate-200 dark:border-white/10 p-5 bg-white/80 dark:bg-slate-900/60 backdrop-blur-xl shadow-xl flex flex-col justify-between">
               <div>
-                <h2 className="text-lg font-medium text-slate-200 mb-2">{t("detail.tab_bing")}</h2>
-                <p className="text-sm text-slate-400 mb-6 leading-relaxed">
+                <h2 className="text-lg font-medium text-slate-800 dark:text-slate-200 mb-2">{t("detail.tab_bing")}</h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mb-6 leading-relaxed">
                   {t("detail.bing_help_p1")}
                 </p>
               </div>
@@ -449,10 +435,9 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                 {panel.running ? (
                   <button
                     onClick={handleStop}
-                    className="px-4 py-2 rounded-lg text-sm font-medium"
-                    style={{ background: "var(--color-danger)", color: "#fff" }}
+                    className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500 hover:bg-red-600 text-white transition-colors"
                   >
-                    停止
+                    {t("detail.stop")}
                   </button>
                 ) : (
                   <Btn onClick={handleSubmitBing} disabled={urlAction || panel.running} variant="purple">
@@ -463,23 +448,23 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             </div>
 
             {/* Bing Help Guide */}
-            <div className="rounded-2xl border border-white/5 bg-slate-800/40 p-5 shadow-inner">
-              <p className="font-semibold text-slate-200 mb-3 flex items-center gap-2">
-                <span className="text-amber-400 text-lg">💡</span>
+            <div className="rounded-2xl border border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-800/40 p-5 shadow-inner">
+              <p className="font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
+                <span className="text-amber-500 dark:text-amber-400 text-lg">💡</span>
                 {t("detail.bing_help_title")}
               </p>
-              <div className="space-y-2.5 text-sm text-slate-400">
+              <div className="space-y-2.5 text-sm text-slate-600 dark:text-slate-400">
                 <p className="flex gap-2"><span>1.</span><span>{t("detail.bing_help_s1")}</span></p>
                 <p className="flex gap-2">
                   <span>2.</span>
-                  <span>{t("detail.bing_help_s2")} <code className="text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded ml-1 font-mono text-xs">yourkey.txt</code></span>
+                  <span>{t("detail.bing_help_s2")} <code className="text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-500/10 px-1.5 py-0.5 rounded ml-1 font-mono text-xs">yourkey.txt</code></span>
                 </p>
                 <p className="flex gap-2"><span>3.</span><span>{t("detail.bing_help_s3")}</span></p>
                 <p className="flex gap-2">
                   <span>4.</span>
-                  <span>{t("detail.bing_help_s4")} <code className="text-violet-400 font-mono text-xs mx-1">https://yourdomain.com/yourkey.txt</code> {t("detail.bing_help_s5")}</span>
+                  <span>{t("detail.bing_help_s4")} <code className="text-violet-600 dark:text-violet-400 font-mono text-xs mx-1">https://yourdomain.com/yourkey.txt</code> {t("detail.bing_help_s5")}</span>
                 </p>
-                <p className="flex gap-2 text-slate-300"><span>5.</span><span>{t("detail.bing_help_s6")}</span></p>
+                <p className="flex gap-2 text-slate-500 dark:text-slate-300"><span>5.</span><span>{t("detail.bing_help_s6")}</span></p>
               </div>
             </div>
           </div>
@@ -488,7 +473,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
 
       {/* General URL Management Actions */}
       <div
-        className="flex flex-wrap gap-3 rounded-2xl border border-white/10 p-4 bg-slate-900/60 backdrop-blur-xl shadow-xl"
+        className="flex flex-wrap gap-3 rounded-2xl border border-slate-200 dark:border-white/10 p-4 bg-white/80 dark:bg-slate-900/60 backdrop-blur-xl shadow-xl items-center"
       >
         <Btn onClick={handleFetchUrls} disabled={urlAction || panel.running} variant="dark">
           {t("detail.fetch")}
@@ -498,8 +483,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         </Btn>
         {selected.size > 0 && (
           <>
-            <div className="w-px mx-1" style={{ background: "var(--color-rim)" }} />
-            <span className="self-center text-sm" style={{ color: "var(--color-muted)" }}>
+            <div className="w-px h-6 mx-1 bg-slate-200 dark:bg-white/10" />
+            <span className="self-center text-sm text-slate-500 dark:text-slate-400">
               {t("detail.selected")} {selected.size} {t("detail.items")}
             </span>
             <Btn onClick={handleMarkIndexed} disabled={urlAction} variant="green">
@@ -508,8 +493,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             <Btn onClick={handleResetSelected} disabled={urlAction} variant="warn">
               {t("detail.reset_selected")}
             </Btn>
-            <div className="w-px mx-1" style={{ background: "var(--color-rim)" }} />
-            <span className="self-center text-xs text-slate-500">{t("detail.priority")}</span>
+            <div className="w-px h-6 mx-1 bg-slate-200 dark:bg-white/10" />
+            <span className="self-center text-xs text-slate-400 dark:text-slate-500">{t("detail.priority")}</span>
             <Btn onClick={() => handleSetPriority("high")} disabled={urlAction} variant="warn">
               🔴 {t("detail.priority_high")}
             </Btn>
@@ -526,33 +511,31 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
       {/* Progress panel */}
       {panel.visible && (
         <div
-          className="rounded-2xl border border-white/10 overflow-hidden bg-slate-900/80 backdrop-blur-2xl shadow-2xl"
+          className="rounded-2xl border border-slate-200 dark:border-white/10 overflow-hidden bg-white/90 dark:bg-slate-900/80 backdrop-blur-2xl shadow-2xl"
         >
           <div
-            className="flex items-center justify-between px-4 py-2.5 border-b"
-            style={{ background: "rgba(0,0,0,0.2)", borderColor: "var(--color-rim)" }}
+            className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/20"
           >
-            <span className="text-xs font-medium" style={{ color: "var(--color-muted)" }}>{panel.title}</span>
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">{panel.title}</span>
             {!panel.running && (
               <button
                 onClick={() => setPanel((p) => ({ ...p, visible: false }))}
-                className="text-xs"
-                style={{ color: "var(--color-muted)" }}
+                className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors"
               >
-                关闭
+                {t("detail.close")}
               </button>
             )}
           </div>
           {panel.progress && (
             <div className="px-4 pt-3 pb-1">
-              <div className="flex justify-between text-xs mb-1.5" style={{ color: "var(--color-muted)" }}>
-                <span>{panel.progress.done} / {panel.progress.total} 网址</span>
+              <div className="flex justify-between text-xs mb-1.5 text-slate-500 dark:text-slate-400">
+                <span>{panel.progress.done} / {panel.progress.total} {t("detail.urls")}</span>
                 <span>{pct}%</span>
               </div>
-              <div className="rounded-full h-1.5" style={{ background: "var(--color-rim)" }}>
+              <div className="rounded-full h-1.5 bg-slate-200 dark:bg-white/10">
                 <div
-                  className="h-1.5 rounded-full transition-all duration-300"
-                  style={{ width: `${pct}%`, background: "var(--color-accent)" }}
+                  className="h-1.5 rounded-full transition-all duration-300 bg-violet-600 dark:bg-violet-500"
+                  style={{ width: `${pct}%` }}
                 />
               </div>
             </div>
@@ -561,18 +544,17 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             {panel.log.map((entry, i) => (
               <p
                 key={i}
-                style={{
-                  color:
-                    entry.kind === "error" ? "var(--color-danger)" :
-                    entry.kind === "ok" ? "var(--color-success)" :
-                    entry.kind === "url" ? "var(--color-muted)" :
-                    "#e6edf3",
-                }}
+                className={
+                  entry.kind === "error" ? "text-red-500 dark:text-red-400" :
+                  entry.kind === "ok" ? "text-emerald-600 dark:text-emerald-400" :
+                  entry.kind === "url" ? "text-slate-500 dark:text-slate-400" :
+                  "text-slate-800 dark:text-slate-200"
+                }
               >
                 {entry.kind === "url" ? `✓ ${entry.text}` : entry.text}
               </p>
             ))}
-            {panel.running && <p className="animate-pulse" style={{ color: "var(--color-rim)" }}>…</p>}
+            {panel.running && <p className="animate-pulse text-slate-400 dark:text-slate-500">…</p>}
           </div>
         </div>
       )}
@@ -586,12 +568,12 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             value={urlSearch}
             onChange={(e) => setUrlSearch(e.target.value)}
             placeholder={t("detail.search")}
-            className="flex-1 px-4 py-2 rounded-xl text-sm border border-white/10 bg-slate-900/50 text-slate-200 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all min-w-[200px]"
+            className="flex-1 px-4 py-2 rounded-xl text-sm border border-slate-300 dark:border-white/10 bg-white dark:bg-slate-900/50 text-slate-800 dark:text-slate-200 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all min-w-[200px]"
           />
           <select
             value={urlCategory}
             onChange={(e) => { setUrlCategory(e.target.value); setUrlPage(1); setSelected(new Set()); }}
-            className="px-4 py-2 rounded-xl text-sm border border-white/10 bg-slate-900/50 text-slate-200 outline-none focus:border-violet-500 transition-all"
+            className="px-4 py-2 rounded-xl text-sm border border-slate-300 dark:border-white/10 bg-white dark:bg-slate-900/50 text-slate-800 dark:text-slate-200 outline-none focus:border-violet-500 transition-all"
           >
             <option value="all">{t("detail.all_categories")}</option>
             {categories.map(c => (
@@ -603,11 +585,11 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             <button
               key={f}
               onClick={() => { setUrlFilter(f); setUrlPage(1); setSelected(new Set()); }}
-              className="text-sm px-3 py-1.5 rounded-full transition-colors"
-              style={{
-                background: urlFilter === f ? "var(--color-accent)" : "rgba(255,255,255,0.05)",
-                color: urlFilter === f ? "#fff" : "var(--color-muted)",
-              }}
+              className={`text-sm px-3 py-1.5 rounded-full transition-colors ${
+                urlFilter === f 
+                  ? "bg-violet-600 text-white" 
+                  : "bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-white/10"
+              }`}
             >
               {f === "all" ? t("detail.all") : f === "pending" ? t("detail.pending_count") : t("detail.indexed")}
             </button>
@@ -615,84 +597,84 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-white/10 overflow-hidden bg-slate-900/60 backdrop-blur-xl shadow-xl">
-          <table className="w-full text-sm text-slate-300">
+        <div className="rounded-2xl border border-slate-200 dark:border-white/10 overflow-hidden bg-white/80 dark:bg-slate-900/60 backdrop-blur-xl shadow-xl">
+          <table className="w-full text-sm text-slate-600 dark:text-slate-300">
             <thead>
-              <tr className="bg-slate-900/80 border-b border-white/10">
+              <tr className="bg-slate-50 dark:bg-slate-900/80 border-b border-slate-200 dark:border-white/10">
                 <th className="px-4 py-2.5 w-8">
                   <input
                     type="checkbox"
                     checked={urls.length > 0 && selected.size === urls.length}
                     onChange={toggleSelectAll}
+                    className="rounded border-slate-300 dark:border-white/20"
                   />
                 </th>
-                <th className="text-left px-4 py-2.5 font-medium" style={{ color: "var(--color-muted)" }}>{t("detail.url")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>{t("detail.category")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>{t("detail.status")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-20" style={{ color: "var(--color-muted)" }}>{t("detail.priority_label")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-28" style={{ color: "var(--color-muted)" }}>{t("detail.sent_time")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>{t("detail.lastmod")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-28" style={{ color: "var(--color-muted)" }}>GSC</th>
+                <th className="text-left px-4 py-2.5 font-medium text-slate-500 dark:text-slate-400">{t("detail.url")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-24 text-slate-500 dark:text-slate-400">{t("detail.category")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-24 text-slate-500 dark:text-slate-400">{t("detail.status")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-20 text-slate-500 dark:text-slate-400">{t("detail.priority_label")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-28 text-slate-500 dark:text-slate-400">{t("detail.sent_time")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-24 text-slate-500 dark:text-slate-400">{t("detail.lastmod")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-28 text-slate-500 dark:text-slate-400">GSC</th>
               </tr>
             </thead>
             <tbody>
               {urls.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-sm" style={{ color: "var(--color-muted)" }}>
-                    暂无网址
+                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
+                    {t("detail.no_urls")}
                   </td>
                 </tr>
               ) : urls.map((u, i) => (
                 <tr
                   key={u.url}
-                  style={{
-                    background: selected.has(u.url)
-                      ? "var(--color-accent-dim)"
-                      : i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.015)",
-                    borderTop: "1px solid var(--color-rim)",
-                  }}
+                  className={`border-t border-slate-100 dark:border-white/5 ${
+                    selected.has(u.url)
+                      ? "bg-violet-50 dark:bg-violet-500/10"
+                      : i % 2 === 0 ? "bg-transparent" : "bg-slate-50 dark:bg-white/[0.015]"
+                  }`}
                 >
                   <td className="px-4 py-2">
-                    <input type="checkbox" checked={selected.has(u.url)} onChange={() => toggleSelect(u.url)} />
+                    <input type="checkbox" className="rounded border-slate-300 dark:border-white/20" checked={selected.has(u.url)} onChange={() => toggleSelect(u.url)} />
                   </td>
                   <td className="px-4 py-2 font-mono text-xs truncate max-w-xs">
-                    <a href={u.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--color-accent-hover)" }}>
+                    <a href={u.url} target="_blank" rel="noopener noreferrer" className="text-violet-600 dark:text-violet-400 hover:underline">
                       {u.url}
                     </a>
                   </td>
-                  <td className="px-4 py-2 text-xs" style={{ color: "var(--color-muted)" }}>
+                  <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
                     {u.category}
                   </td>
                   <td className="px-4 py-2">
                     <span
-                      className="px-2 py-0.5 rounded-full text-xs font-medium"
-                      style={{
-                        background: u.indexed ? "rgba(31,111,235,0.15)" : "rgba(210,153,34,0.15)",
-                        color: u.indexed ? "var(--color-accent-hover)" : "var(--color-warn)",
-                      }}
+                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        u.indexed 
+                          ? "bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400" 
+                          : "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400"
+                      }`}
                     >
                       {u.indexed ? t("detail.sent") : t("sites.pending")}
                     </span>
                   </td>
                   <td className="px-4 py-2">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                      u.priority === "high" ? "bg-red-500/15 text-red-400" :
-                      u.priority === "low" ? "bg-slate-500/15 text-slate-400" :
-                      "bg-white/5 text-slate-500"
+                      u.priority === "high" ? "bg-red-50 text-red-500 dark:bg-red-500/15 dark:text-red-400" :
+                      u.priority === "low" ? "bg-slate-100 text-slate-500 dark:bg-slate-500/15 dark:text-slate-400" :
+                      "bg-slate-100 text-slate-500 dark:bg-white/5 dark:text-slate-500"
                     }`}>
                       {u.priority === "high" ? t("detail.priority_high") : u.priority === "low" ? t("detail.priority_low") : t("detail.priority_normal")}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-xs" style={{ color: "var(--color-muted)" }}>
+                  <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
                     {u.indexed_at ? new Date(u.indexed_at).toLocaleDateString() : "—"}
                   </td>
-                  <td className="px-4 py-2 text-xs" style={{ color: "var(--color-muted)" }}>
+                  <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
                     {u.lastmod ?? "—"}
                   </td>
                   <td className="px-4 py-2">
                     {u.sc_synced_at
-                      ? <span className="px-2 py-0.5 rounded-full text-xs font-medium" style={{ background: "rgba(63,185,80,0.15)", color: "var(--color-success)" }}>已索引</span>
-                      : <span className="text-xs" style={{ color: "var(--color-rim)" }}>—</span>
+                      ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">{t("detail.indexed")}</span>
+                      : <span className="text-xs text-slate-300 dark:text-white/20">—</span>
                     }
                   </td>
                 </tr>
@@ -704,25 +686,23 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         {/* Pagination */}
         {urlTotal > PAGE_SIZE && (
         <div className="flex items-center justify-between px-1 py-3 mt-1">
-          <span className="text-xs" style={{ color: "var(--color-muted)" }}>
-            {(urlPage - 1) * PAGE_SIZE + 1}–{Math.min(urlPage * PAGE_SIZE, urlTotal)} / {urlTotal} 个网址
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            {(urlPage - 1) * PAGE_SIZE + 1}–{Math.min(urlPage * PAGE_SIZE, urlTotal)} / {urlTotal} {t("detail.urls")}
           </span>
           <div className="flex gap-1">
             <button
               onClick={() => setUrlPage((p) => Math.max(1, p - 1))}
               disabled={urlPage === 1}
-              className="px-3 py-1 text-sm rounded-lg border disabled:opacity-40"
-              style={{ borderColor: "var(--color-rim)", color: "var(--color-muted)" }}
+              className="px-3 py-1 text-sm rounded-lg border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
             >
-              ← 上一页
+              {t("detail.prev")}
             </button>
             <button
               onClick={() => setUrlPage((p) => p + 1)}
               disabled={urlPage * PAGE_SIZE >= urlTotal}
-              className="px-3 py-1 text-sm rounded-lg border disabled:opacity-40"
-              style={{ borderColor: "var(--color-rim)", color: "var(--color-muted)" }}
+              className="px-3 py-1 text-sm rounded-lg border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
             >
-              下一页 →
+              {t("detail.next")}
             </button>
           </div>
         </div>
@@ -754,11 +734,11 @@ function Btn({
   variant: "dark" | "purple" | "ghost" | "green" | "warn";
 }) {
   const styles: Record<string, string> = {
-    dark: "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-white/10",
+    dark: "bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-white/10",
     purple: "bg-violet-600 hover:bg-violet-500 text-white shadow-[0_0_10px_rgba(139,92,246,0.3)] border border-violet-500/50",
-    ghost: "bg-transparent hover:bg-white/5 text-slate-400 border border-white/10",
-    green: "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
-    warn: "bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30",
+    ghost: "bg-transparent hover:bg-slate-100 dark:hover:bg-white/5 text-slate-600 dark:text-slate-400 border border-slate-300 dark:border-white/10",
+    green: "bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30",
+    warn: "bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-500/30",
   };
 
   return (

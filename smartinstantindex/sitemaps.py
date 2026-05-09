@@ -22,9 +22,10 @@ def fetch_urls_from_sitemap(sitemap_url, proxy=None):
             if loc:
                 lastmod = url_tag.find("lastmod")
                 urls[loc.text] = lastmod.text if lastmod else None
-        # Also handle sitemap index entries (sitemaploc entries have no <url> wrapper)
-        for loc in soup.find_all("loc"):
-            if loc.text not in urls:
+        # Also handle sitemap index entries (sitemaploc entries are inside <sitemap>)
+        for sitemap_tag in soup.find_all("sitemap"):
+            loc = sitemap_tag.find("loc")
+            if loc and loc.text not in urls:
                 urls[loc.text] = None
         return urls
     else:

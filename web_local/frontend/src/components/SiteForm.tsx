@@ -91,18 +91,18 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="w-full max-w-lg rounded-2xl border border-white/10 shadow-2xl overflow-hidden bg-slate-900/80 backdrop-blur-xl"
+        className="w-full max-w-lg rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden bg-white dark:bg-slate-900/80 backdrop-blur-xl"
       >
         {/* Header */}
         <div
-          className="flex items-center justify-between px-5 py-4 border-b border-white/5"
+          className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-white/5"
         >
-          <h2 className="font-semibold text-white">
+          <h2 className="font-semibold text-slate-800 dark:text-white">
             {site ? "编辑站点" : "新建站点"}
           </h2>
           <button
             onClick={onClose}
-            className="text-xl leading-none text-slate-400 hover:text-white transition-colors"
+            className="text-xl leading-none text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors"
           >
             ×
           </button>
@@ -111,7 +111,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto max-h-[70vh]">
           {error && (
-            <p className="text-sm p-3 rounded-md" style={{ background: "rgba(248,81,73,0.1)", color: "var(--color-danger)" }}>
+            <p className="text-sm p-3 rounded-md bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400">
               {error}
             </p>
           )}
@@ -123,7 +123,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
               disabled={!!site}
               required
               placeholder="my-site"
-              className="input"
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 text-slate-800 dark:text-slate-100 text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 disabled:opacity-50 transition-all"
             />
           </Field>
 
@@ -133,7 +133,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
               onChange={(e) => setSitemapUrl(e.target.value)}
               required
               placeholder="https://example.com/sitemap.xml"
-              className="input"
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 text-slate-800 dark:text-slate-100 text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 disabled:opacity-50 transition-all"
             />
           </Field>
 
@@ -142,25 +142,25 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
               value={siteUrl}
               onChange={(e) => setSiteUrl(e.target.value)}
               placeholder="https://example.com/"
-              className="input"
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 text-slate-800 dark:text-slate-100 text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 disabled:opacity-50 transition-all"
             />
           </Field>
 
           <Field label="凭据">
             {availableCreds.length === 0 ? (
-              <p className="text-sm" style={{ color: "var(--color-muted)" }}>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
                 暂无可用凭据。请在设置中上传服务账户 JSON 文件。
               </p>
             ) : (
               <div className="space-y-2">
                 {availableCreds.map((c) => (
                   <div key={c.filename}>
-                    <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300 hover:text-white transition-colors">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors">
                       <input
                         type="checkbox"
                         checked={credentials.includes(c.filename)}
                         onChange={() => toggleCred(c.filename)}
-                        className="rounded bg-slate-800 border-white/10 accent-violet-500"
+                        className="rounded bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-white/10 accent-violet-500"
                       />
                       <span className="font-mono text-xs truncate">{c.client_email}</span>
                     </label>
@@ -171,7 +171,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
                           placeholder="特定代理 (如: socks5://127.0.0.1:1080) [留空则用全局]"
                           value={credentialProxies[c.filename] || ""}
                           onChange={(e) => setCredentialProxies({ ...credentialProxies, [c.filename]: e.target.value })}
-                          className="w-full px-2 py-1 text-xs rounded border border-white/10 bg-slate-900/50 text-slate-300 focus:border-violet-500 focus:outline-none transition-colors"
+                          className="w-full px-2 py-1 text-xs rounded border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900/50 text-slate-800 dark:text-slate-300 focus:border-violet-500 focus:outline-none transition-colors"
                         />
                       </div>
                     )}
@@ -181,12 +181,12 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
             )}
           </Field>
 
-          <label className="flex items-center gap-2 cursor-pointer text-sm">
+          <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-slate-200">
             <input
               type="checkbox"
               checked={trackLastmod}
               onChange={(e) => setTrackLastmod(e.target.checked)}
-              className="rounded"
+              className="rounded accent-violet-500"
             />
             <span>跟踪 lastmod (当 sitemap lastmod 变化时重新索引)</span>
           </label>
@@ -196,7 +196,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
               value={skipExtensions}
               onChange={(e) => setSkipExtensions(e.target.value)}
               placeholder=".pdf, .jpg, .png"
-              className="input"
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 text-slate-800 dark:text-slate-100 text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 disabled:opacity-50 transition-all"
             />
           </Field>
 
@@ -206,7 +206,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
               onChange={(e) => setExcludePatterns(e.target.value)}
               rows={3}
               placeholder="/admin/.*\n/tag/.*"
-              className="input resize-none font-mono text-xs"
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 text-slate-800 dark:text-slate-100 text-xs font-mono outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 disabled:opacity-50 transition-all resize-none"
             />
           </Field>
 
@@ -216,7 +216,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
               onChange={(e) => setIncludePatterns(e.target.value)}
               rows={3}
               placeholder="/blog/.*"
-              className="input resize-none font-mono text-xs"
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 text-slate-800 dark:text-slate-100 text-xs font-mono outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 disabled:opacity-50 transition-all resize-none"
             />
           </Field>
 
@@ -231,7 +231,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 py-2.5 rounded-lg text-sm font-medium border border-white/10 bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:text-white transition-all"
+              className="flex-1 py-2.5 rounded-lg text-sm font-medium border border-slate-300 dark:border-white/10 bg-slate-100 dark:bg-slate-800/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700/50 hover:text-slate-900 dark:hover:text-white transition-all"
             >
               取消
             </button>
@@ -239,26 +239,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
         </form>
       </div>
 
-      <style>{`
-        .input {
-          width: 100%;
-          padding: 0.6rem 0.875rem;
-          border-radius: 0.5rem;
-          border: 1px solid rgba(255,255,255,0.1);
-          background: rgba(15, 23, 42, 0.4);
-          color: #f1f5f9;
-          font-size: 0.875rem;
-          outline: none;
-          transition: all 0.2s;
-        }
-        .input:focus {
-          border-color: #8b5cf6;
-          box-shadow: 0 0 0 1px #8b5cf6;
-        }
-        .input:disabled {
-          opacity: 0.5;
-        }
-      `}</style>
+
     </div>
   );
 }
@@ -266,9 +247,9 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
 function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
-      <label className="text-xs font-medium" style={{ color: "var(--color-muted)" }}>
+      <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
         {label}
-        {required && <span style={{ color: "var(--color-danger)" }}> *</span>}
+        {required && <span className="text-red-500 dark:text-red-400"> *</span>}
       </label>
       {children}
     </div>

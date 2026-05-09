@@ -3,39 +3,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httplib2
 from oauth2client.service_account import ServiceAccountCredentials
-from smartinstantindex.utils import APP_LOGGER
+from smartinstantindex.utils import APP_LOGGER, parse_proxy_info
 
 SCOPES = ["https://www.googleapis.com/auth/indexing"]
 ENDPOINT = "https://indexing.googleapis.com/v3/urlNotifications:publish"
 
 
 def _get_http(proxy=None):
-    if proxy:
-        import socks
-        # Parse proxy string e.g. http://127.0.0.1:7890
-        proxy_type = socks.PROXY_TYPE_HTTP
-        if proxy.startswith("socks5"):
-            proxy_type = socks.PROXY_TYPE_SOCKS5
-        
-        # Simple parsing logic
-        clean_proxy = proxy.replace("http://", "").replace("https://", "").replace("socks5://", "")
-        if "@" in clean_proxy:
-            auth, host_port = clean_proxy.split("@")
-            username, password = auth.split(":")
-            host, port = host_port.split(":")
-        else:
-            host, port = clean_proxy.split(":")
-            username, password = None, None
-            
-        proxy_info = httplib2.ProxyInfo(
-            proxy_type=proxy_type,
-            proxy_host=host,
-            proxy_port=int(port),
-            proxy_user=username,
-            proxy_pass=password
-        )
-        return httplib2.Http(proxy_info=proxy_info)
-    return httplib2.Http()
+    return httplib2.Http(proxy_info=parse_proxy_info(proxy))
 
 
 def index_url_from_dict(url, credentials_dict, index, proxy=None):

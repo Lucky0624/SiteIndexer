@@ -756,16 +756,21 @@ INDEXNOW_ENDPOINT = "https://api.indexnow.org/IndexNow"
 
 class IndexNowConfig(BaseModel):
     key: str = ""
+    keyLocation: str = ""
 
 @app.get("/api/indexnow/config")
 def get_indexnow_config():
     config = get_config()
-    return {"key": config.get("indexnow_key", "")}
+    return {
+        "key": config.get("indexnow_key", ""),
+        "keyLocation": config.get("indexnow_keyLocation", "")
+    }
 
 @app.post("/api/indexnow/config")
 def save_indexnow_config(body: IndexNowConfig):
     config = get_config()
     config["indexnow_key"] = body.key
+    config["indexnow_keyLocation"] = body.keyLocation
     save_config(config)
     return {"ok": True}
 
@@ -812,6 +817,9 @@ def submit_bing_stream(name: str):
                     "key": api_key,
                     "urlList": batch,
                 }
+                key_location = config.get("indexnow_keyLocation", "")
+                if key_location:
+                    payload["keyLocation"] = key_location
                 resp = http_requests.post(
                     INDEXNOW_ENDPOINT,
                     json=payload,

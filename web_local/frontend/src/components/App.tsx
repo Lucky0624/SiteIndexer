@@ -26,14 +26,14 @@ export default function App() {
   return (
     <I18nProvider>
       <ThemeProvider>
-        <div className="flex h-screen overflow-hidden bg-[#0f172a] text-slate-200">
+        <div className="flex h-screen overflow-hidden text-slate-800 dark:text-slate-200 bg-transparent">
           <Sidebar view={view} navigate={setView} />
           <main className="flex-1 overflow-auto relative z-10">
             <div className={view.name === "sites" ? "block h-full" : "hidden"}>
               <SitesList navigate={setView} />
             </div>
             <div className={view.name === "site" ? "block h-full" : "hidden"}>
-              {lastSite && <SiteDetail site={lastSite} navigate={setView} />}
+              {lastSite && <SiteDetail key={lastSite} site={lastSite} navigate={setView} />}
             </div>
             <div className={view.name === "settings" ? "block h-full" : "hidden"}>
               <Settings />

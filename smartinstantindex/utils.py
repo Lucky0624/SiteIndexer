@@ -7,6 +7,52 @@ import threading
 from datetime import date
 
 
+def parse_proxy_info(proxy):
+    """Parse a proxy URL string into httplib2.ProxyInfo.
+
+    Supports http://, https://, socks5:// with optional user:pass@host:port.
+    Returns None if proxy is falsy.
+    Shared by indexing.py and searchconsole.py to avoid duplicated parsing logic.
+    """
+    if not proxy:
+        return None
+
+    import httplib2
+    try:
+        import socks
+    except ImportError:
+        # PySocks not installed — only HTTP proxies available
+        import http.client
+        clean = proxy.replace("http://", "").replace("https://", "")
+        host, port = clean.split(":")
+        return httplib2.ProxyInfo(
+            proxy_type=3,  # PROXY_TYPE_HTTP
+            proxy_host=host,
+            proxy_port=int(port),
+        )
+
+    proxy_type = socks.PROXY_TYPE_HTTP
+    if proxy.startswith("socks5"):
+        proxy_type = socks.PROXY_TYPE_SOCKS5
+
+    clean_proxy = proxy.replace("http://", "").replace("https://", "").replace("socks5://", "")
+    if "@" in clean_proxy:
+        auth, host_port = clean_proxy.split("@")
+        username, password = auth.split(":")
+        host, port = host_port.split(":")
+    else:
+        host, port = clean_proxy.split(":")
+        username, password = None, None
+
+    return httplib2.ProxyInfo(
+        proxy_type=proxy_type,
+        proxy_host=host,
+        proxy_port=int(port),
+        proxy_user=username,
+        proxy_pass=password,
+    )
+
+
 def load_json(file_path):
     try:
         with open(file_path, 'r') as file:

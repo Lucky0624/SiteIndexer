@@ -339,7 +339,7 @@ class DashboardScreen(ctk.CTkFrame):
                     self.after(0, self.progress.set,
                                global_i / total_to_index if total_to_index else 1)
                     try:
-                        result = index_url(url, creds_path, global_i)
+                        result = index_url(url, creds_path, global_i, proxy=site.get("proxy"))
                         if result:
                             existing_urls[url]["indexed"] = True
                             existing_urls[url]["indexed_at"] = str(date.today())
