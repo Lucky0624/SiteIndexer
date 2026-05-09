@@ -1,0 +1,75 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: "22"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: SmartInstantIndex-windows.exe
+            binary_path: dist/SmartInstantIndex.exe
+          - os: ubuntu-latest
+            artifact_name: SmartInstantIndex-linux
+            binary_path: dist/SmartInstantIndex
+          - os: macos-latest
+            artifact_name: SmartInstantIndex-macos
+            binary_path: dist/SmartInstantIndex
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build Astro frontend
+        working-directory: web_local/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build executable
+        run: python build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.binary_path }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4.3.0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SmartInstantIndex-windows.exe/SmartInstantIndex.exe
+            SmartInstantIndex-linux/SmartInstantIndex
+            SmartInstantIndex-macos/SmartInstantIndex
+          generate_release_notes: true

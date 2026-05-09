@@ -1,0 +1,12 @@
+beautifulsoup4==4.12.3
+httplib2==0.22.0
+oauth2client==4.1.3
+curl_cffi==0.7.4
+lxml
+fastapi
+uvicorn[standard]
+python-multipart
+pyinstaller
+pystray
+pillow
+PySocks
