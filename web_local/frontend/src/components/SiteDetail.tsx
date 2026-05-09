@@ -172,6 +172,43 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     };
   }
 
+  // --- Submit to Bing ---
+  function handleSubmitBing() {
+    if (esRef.current) esRef.current.close();
+    setPanel({ visible: true, running: true, title: t("detail.submit_bing"), log: [], progress: null });
+
+    const es = new EventSource(api.submitBingStreamUrl(siteName));
+    esRef.current = es;
+
+    es.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      if (ev.type === "status") addLog(ev.message);
+      if (ev.type === "progress") {
+        setPanel((p) => ({ ...p, progress: { done: ev.submitted, total: ev.total } }));
+      }
+      if (ev.type === "done") {
+        addLog(`✓ ${ev.message}`, "ok");
+        setPanel((p) => ({ ...p, running: false }));
+        es.close();
+        esRef.current = null;
+        loadSite();
+        loadUrls();
+      }
+      if (ev.type === "error") {
+        addLog(`✗ ${ev.message}`, "error");
+        setPanel((p) => ({ ...p, running: false }));
+        es.close();
+        esRef.current = null;
+      }
+    };
+    es.onerror = () => {
+      addLog("连接丢失", "error");
+      setPanel((p) => ({ ...p, running: false }));
+      es.close();
+      esRef.current = null;
+    };
+  }
+
   // --- Fetch URLs ---
   async function handleFetchUrls() {
     setUrlAction(true);
