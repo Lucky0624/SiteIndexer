@@ -13,6 +13,7 @@ const translations = {
   "form.cancel": { zh: "取消", en: "Cancel" },
   "form.site_name": { zh: "站点名称", en: "Site Name" },
   "form.track_lastmod": { zh: "跟踪 lastmod", en: "Track lastmod" },
+  "nav.settings": { zh: "设置", en: "Settings" },
   "nav.help": { zh: "帮助", en: "Help" },
 
   // SitesList

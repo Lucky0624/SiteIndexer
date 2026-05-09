@@ -8,6 +8,7 @@ subprocess.run([
     "--onefile",
     "--windowed",
     "--name", "SiteIndexer",
+    "--icon", "icon.ico",
     "--add-data", f"web_local/frontend/dist{sep}static",
     "--add-data", f"web_local/frontend/public/android-chrome-192x192.png{sep}.",
     "--hidden-import", "uvicorn.lifespan.on",

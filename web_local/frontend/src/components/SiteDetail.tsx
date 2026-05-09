@@ -561,6 +561,14 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
 
       {/* URL table */}
       <div>
+        {/* Bing Table Note */}
+        {activeTab === "bing" && (
+          <div className="mb-4 text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 rounded-xl border border-amber-200 dark:border-amber-500/20 flex items-center gap-2">
+            <span>ℹ️</span> 
+            <p><strong>注意：</strong>下面显示的 URL“已发送”状态主要反映 Google 的提交记录。Bing IndexNow 的提交是独立的且不会单独追踪此列表中的每一项的缓存记录。</p>
+          </div>
+        )}
+
         {/* Search + Filter tabs */}
         <div className="flex items-center gap-3 mb-3 flex-wrap">
           <input
@@ -615,13 +623,13 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                 <th className="text-left px-4 py-2.5 font-medium w-20 text-slate-500 dark:text-slate-400">{t("detail.priority_label")}</th>
                 <th className="text-left px-4 py-2.5 font-medium w-28 text-slate-500 dark:text-slate-400">{t("detail.sent_time")}</th>
                 <th className="text-left px-4 py-2.5 font-medium w-24 text-slate-500 dark:text-slate-400">{t("detail.lastmod")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-28 text-slate-500 dark:text-slate-400">GSC</th>
+                {activeTab === "google" && <th className="text-left px-4 py-2.5 font-medium w-28 text-slate-500 dark:text-slate-400">GSC</th>}
               </tr>
             </thead>
             <tbody>
               {urls.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
+                  <td colSpan={activeTab === "google" ? 8 : 7} className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
                     {t("detail.no_urls")}
                   </td>
                 </tr>
@@ -653,7 +661,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                           : "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400"
                       }`}
                     >
-                      {u.indexed ? t("detail.sent") : t("sites.pending")}
+                      {activeTab === "bing" && u.indexed ? "已缓存/发送" : u.indexed ? t("detail.sent") : t("sites.pending")}
                     </span>
                   </td>
                   <td className="px-4 py-2">
@@ -671,12 +679,14 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
                     {u.lastmod ?? "—"}
                   </td>
+                  {activeTab === "google" && (
                   <td className="px-4 py-2">
                     {u.sc_synced_at
                       ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">{t("detail.indexed")}</span>
                       : <span className="text-xs text-slate-300 dark:text-white/20">—</span>
                     }
                   </td>
+                  )}
                 </tr>
               ))}
             </tbody>
