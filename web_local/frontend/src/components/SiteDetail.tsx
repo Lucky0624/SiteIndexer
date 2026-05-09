@@ -638,7 +638,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             <tbody>
               {urls.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-sm" style={{ color: "var(--color-muted)" }}>
+                  <td colSpan={8} className="px-4 py-10 text-center text-sm" style={{ color: "var(--color-muted)" }}>
                     暂无网址
                   </td>
                 </tr>

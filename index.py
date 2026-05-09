@@ -80,15 +80,15 @@ for site in sites:
             except Exception as e:
                 APP_LOGGER.warning(f"Error indexing {url}: {e}")
                 save_urls_to_file(existing_urls, site["urls_file"])
-                if batch_indexed:
-                    update_quota_batch(creds_file, batch_indexed)
                 if "Rate limit" in str(e) or "429" in str(e):
                     APP_LOGGER.info(f"Quota exhausted for {creds_file}, switching to next credential.")
                     quota_exhausted = True
                     break
+                # Record partial progress before re-raising
+                indexed_tally[creds_file] = indexed_tally.get(creds_file, 0) + batch_indexed
                 raise
         url_cursor += batch_indexed  # advance by actually indexed count so next credential retries from here
-        indexed_tally[creds_file] = batch_indexed
+        indexed_tally[creds_file] = indexed_tally.get(creds_file, 0) + batch_indexed
         if quota_exhausted:
             continue
 

@@ -33,23 +33,23 @@ def fetch_urls_from_sitemap(sitemap_url, proxy=None):
         return {}
 
 
-ALL_URLS = {}
+def fetch_urls_from_sitemap_recursive(sitemap_url, visited_sitemaps=None, proxy=None, _collected=None):
+    """Recursively fetch all page URLs from a sitemap (index).
 
-
-def fetch_urls_from_sitemap_recursive(sitemap_url, visited_sitemaps=None, proxy=None):
-    global ALL_URLS
+    Thread-safe: each call chain uses its own local dict instead of a global.
+    """
     if visited_sitemaps is None:
         visited_sitemaps = set()
-        ALL_URLS = {}
+    if _collected is None:
+        _collected = {}
 
     visited_sitemaps.add(sitemap_url)
     urls = fetch_urls_from_sitemap(sitemap_url, proxy=proxy)
 
     for url, lastmod in urls.items():
         if not url.endswith(".xml"):
-            ALL_URLS[url] = lastmod
+            _collected[url] = lastmod
+        elif url not in visited_sitemaps:
+            fetch_urls_from_sitemap_recursive(url, visited_sitemaps, proxy=proxy, _collected=_collected)
 
-        if url.endswith(".xml") and url not in visited_sitemaps:
-            fetch_urls_from_sitemap_recursive(url, visited_sitemaps, proxy=proxy)
-
-    return ALL_URLS
+    return _collected

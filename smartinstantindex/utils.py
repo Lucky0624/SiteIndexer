@@ -3,6 +3,7 @@ import logging
 import logging.config
 import os
 import re
+import threading
 from datetime import date
 
 
@@ -141,20 +142,27 @@ def update_quota(credentials_file):
     update_quota_batch(credentials_file, 1)
 
 
+_quota_lock = threading.Lock()
+
+
 def update_quota_batch(credentials_file, count):
-    """Increment the daily quota counter by count in a single disk write."""
-    quota_path = "quota.json"
-    quota = load_json(quota_path)
-    today = str(date.today())
+    """Increment the daily quota counter by count in a single disk write.
 
-    entry = quota.get(credentials_file)
-    if entry and entry.get("date") == today:
-        entry["used"] += count
-    else:
-        quota[credentials_file] = {"date": today, "used": count}
+    Thread-safe: uses a lock to prevent concurrent read-modify-write corruption.
+    """
+    with _quota_lock:
+        quota_path = "quota.json"
+        quota = load_json(quota_path)
+        today = str(date.today())
 
-    with open(quota_path, "w") as f:
-        json.dump(quota, f, indent=4)
+        entry = quota.get(credentials_file)
+        if entry and entry.get("date") == today:
+            entry["used"] += count
+        else:
+            quota[credentials_file] = {"date": today, "used": count}
+
+        with open(quota_path, "w") as f:
+            json.dump(quota, f, indent=4)
 
 
 QUOTA_LIMIT = 200
@@ -162,16 +170,18 @@ QUOTA_LIMIT = 200
 
 def get_quota_remaining(credentials_file):
     """Return how many URL submissions remain today for a given credentials file."""
-    quota = load_json("quota.json")
-    entry = quota.get(credentials_file, {})
-    used = entry.get("used", 0) if entry.get("date") == str(date.today()) else 0
-    return max(0, QUOTA_LIMIT - used)
+    with _quota_lock:
+        quota = load_json("quota.json")
+        entry = quota.get(credentials_file, {})
+        used = entry.get("used", 0) if entry.get("date") == str(date.today()) else 0
+        return max(0, QUOTA_LIMIT - used)
 
 
 def build_indexing_plan(credentials_list):
     """Return [(creds_file, remaining)] for credentials with quota > 0 today."""
-    return [
-        (creds, get_quota_remaining(creds))
-        for creds in credentials_list
-        if get_quota_remaining(creds) > 0
-    ]
+    plan = []
+    for creds in credentials_list:
+        remaining = get_quota_remaining(creds)
+        if remaining > 0:
+            plan.append((creds, remaining))
+    return plan
