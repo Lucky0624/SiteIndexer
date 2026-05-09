@@ -1,11 +1,12 @@
 """
-SmartInstantIndex — Local Web Backend
+SiteIndexer — Local Web Backend
 FastAPI app: serves the Astro static build and exposes the API.
 """
 import asyncio
 import json
 import os
 import sys
+import time
 import threading
 from datetime import date, datetime
 from pathlib import Path
@@ -39,18 +40,67 @@ from smartinstantindex.searchconsole import fetch_indexed_pages
 # Helpers
 # ---------------------------------------------------------------------------
 
+_config_lock = threading.Lock()
+BATCH_SAVE_INTERVAL = 10  # save URLs file every N indexed URLs
+MAX_RETRY = 3
+RETRY_DELAY = 2  # seconds
+
 def config_path() -> Path:
     return DATA_DIR / "config.json"
 
+def history_path() -> Path:
+    return DATA_DIR / "history.json"
 
 def get_config() -> dict:
-    raw = load_json(str(config_path()))
-    return normalize_config(raw) if raw else {"sites": []}
+    with _config_lock:
+        raw = load_json(str(config_path()))
+        return normalize_config(raw) if raw else {"sites": []}
 
 
 def save_config(config: dict) -> None:
-    with open(config_path(), "w") as f:
-        json.dump(config, f, indent=4)
+    with _config_lock:
+        with open(config_path(), "w") as f:
+            json.dump(config, f, indent=4)
+
+
+def load_history() -> list:
+    data = load_json(str(history_path()))
+    return data if isinstance(data, list) else []
+
+
+def save_history(history: list) -> None:
+    with open(history_path(), "w") as f:
+        json.dump(history[-200:], f, indent=2)  # keep last 200 records
+
+
+def record_history(site_name: str, indexed: int, errors: int, duration_s: float):
+    history = load_history()
+    history.append({
+        "site": site_name,
+        "date": str(date.today()),
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "indexed": indexed,
+        "errors": errors,
+        "duration_s": round(duration_s, 1),
+    })
+    save_history(history)
+
+
+def index_url_with_retry(url, creds_full, index, proxy=None):
+    """Wrap index_url with automatic retry on transient network errors."""
+    last_err = None
+    for attempt in range(1, MAX_RETRY + 1):
+        try:
+            return index_url(url, creds_full, index, proxy=proxy)
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            # Don't retry on quota/permission errors
+            if "429" in msg or "403" in msg or "quota" in msg.lower():
+                raise
+            if attempt < MAX_RETRY:
+                time.sleep(RETRY_DELAY * attempt)
+    raise last_err
 
 
 def get_site(name: str) -> dict:
@@ -175,10 +225,15 @@ def list_urls(name: str, filter: str = "all", page: int = 1, page_size: int = 10
             "indexed_at": data.get("indexed_at"),
             "lastmod": data.get("lastmod"),
             "sc_synced_at": data.get("sc_synced_at"),
+            "priority": data.get("priority", "normal"),
         })
 
     if search:
         items = [i for i in items if search.lower() in i["url"].lower()]
+
+    # Sort: high priority first, then normal, then low
+    priority_order = {"high": 0, "normal": 1, "low": 2}
+    items.sort(key=lambda x: (priority_order.get(x["priority"], 1), x["url"]))
 
     total = len(items)
     start = (page - 1) * page_size
@@ -451,6 +506,14 @@ def run_stream(name: str):
                 return
 
             global_i = 0
+            error_count = 0
+            run_start = time.time()
+
+            # Sort pending_urls by priority (high first)
+            def url_priority(u):
+                p = existing.get(u, {}).get("priority", "normal")
+                return {"high": 0, "normal": 1, "low": 2}.get(p, 1)
+            pending_urls.sort(key=url_priority)
 
             for creds_file, capacity in plan:
                 if not pending_urls:
@@ -460,20 +523,26 @@ def run_stream(name: str):
                 creds_full = str(creds_path(creds_file))
 
                 batch_indexed = 0
+                unsaved_count = 0
 
                 for url in batch:
                     try:
                         cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
-                        index_url(url, creds_full, global_i + 1, proxy=cred_proxy)
+                        index_url_with_retry(url, creds_full, global_i + 1, proxy=cred_proxy)
                         existing[url]["indexed"] = True
                         existing[url]["indexed_at"] = today
                         global_i += 1
                         batch_indexed += 1
-                        save_urls_to_file(existing, str(urls_path(site)))
+                        unsaved_count += 1
                         update_quota_batch(creds_file, 1)
+                        # Batch save: write to disk every BATCH_SAVE_INTERVAL URLs
+                        if unsaved_count >= BATCH_SAVE_INTERVAL:
+                            save_urls_to_file(existing, str(urls_path(site)))
+                            unsaved_count = 0
                         yield send({"type": "indexed", "url": url, "done": global_i, "total": total_to_index})
                     except Exception as e:
                         msg = str(e)
+                        error_count += 1
                         if "429" in msg or "quota" in msg.lower():
                             yield send({"type": "quota_exhausted", "message": f"{creds_file} 配额已用尽"})
                             pending_urls = batch[batch_indexed:] + pending_urls
@@ -484,15 +553,26 @@ def run_stream(name: str):
                             break
                         elif "UNEXPECTED_EOF_WHILE_READING" in msg or "EOF occurred" in msg:
                             yield send({"type": "error", "message": f"网络连接意外中断 (SSL EOF) - 请检查代理节点是否稳定。当前代理: {cred_proxy or '无'}"})
+                            save_urls_to_file(existing, str(urls_path(site)))
+                            record_history(name, global_i, error_count, time.time() - run_start)
                             return
                         elif "ServerNotFoundError" in msg or "Failed to establish a new connection" in msg:
                             yield send({"type": "error", "message": f"无法连接到 Google 服务器 - 请检查网络或代理设置。当前代理: {cred_proxy or '无'}"})
+                            save_urls_to_file(existing, str(urls_path(site)))
+                            record_history(name, global_i, error_count, time.time() - run_start)
                             return
                         else:
                             yield send({"type": "error", "message": f"提交出错: {msg}"})
+                            save_urls_to_file(existing, str(urls_path(site)))
+                            record_history(name, global_i, error_count, time.time() - run_start)
                             return
 
-            final_pending = sum(1 for d in existing.values() if not d.get("indexed"))
+                # Flush remaining unsaved at end of each credential batch
+                if unsaved_count > 0:
+                    save_urls_to_file(existing, str(urls_path(site)))
+
+            final_pending = sum(1 for d in existing.values() if not d.get("indexed"))  
+            record_history(name, global_i, error_count, time.time() - run_start)
             yield send({"type": "done", "indexed": global_i, "pending": final_pending})
 
         except Exception as e:
@@ -594,6 +674,41 @@ def delete_credential(filename: str):
         raise HTTPException(status_code=404, detail="文件不存在")
     target.unlink()
     return {"ok": True}
+
+
+# --- History ---
+
+@app.get("/api/history")
+def get_history(site: str = "", limit: int = 50):
+    history = load_history()
+    if site:
+        history = [h for h in history if h.get("site") == site]
+    return history[-limit:]
+
+
+@app.delete("/api/history")
+def clear_history():
+    save_history([])
+    return {"ok": True}
+
+
+# --- URL Priority ---
+
+class PriorityUpdate(BaseModel):
+    urls: list[str]
+    priority: str  # "high" | "normal" | "low"
+
+@app.post("/api/sites/{name}/set-priority")
+def set_url_priority(name: str, body: PriorityUpdate):
+    site = get_site(name)
+    existing = load_urls(site)
+    updated = 0
+    for url in body.urls:
+        if url in existing:
+            existing[url]["priority"] = body.priority
+            updated += 1
+    save_urls_to_file(existing, str(urls_path(site)))
+    return {"updated": updated}
 
 
 # ---------------------------------------------------------------------------

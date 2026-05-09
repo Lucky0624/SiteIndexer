@@ -16,6 +16,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   const [urls, setUrls] = useState<any[]>([]);
   const [urlFilter, setUrlFilter] = useState<"all" | "pending" | "indexed">("all");
   const [urlSearch, setUrlSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [urlPage, setUrlPage] = useState(1);
   const [urlTotal, setUrlTotal] = useState(0);
   const PAGE_SIZE = 100;
@@ -56,8 +57,18 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   }, [siteName]);
 
   useEffect(() => {
-    loadUrls(urlFilter, urlPage, urlSearch);
-  }, [urlFilter, urlPage, urlSearch]);
+    loadUrls(urlFilter, urlPage, debouncedSearch);
+  }, [urlFilter, urlPage, debouncedSearch]);
+
+  // Debounce search input by 300ms
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(urlSearch);
+      setUrlPage(1);
+      setSelected(new Set());
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [urlSearch]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -202,13 +213,26 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   }
 
   async function handleResetAll() {
-    if (!confirm("Reset all URLs to pending?")) return;
+    if (!confirm("确定要重置所有 URL 为待处理吗？")) return;
     setUrlAction(true);
     try {
       await api.resetUrls(siteName, []);
       setUrls((prev) => prev.map((u) => ({ ...u, indexed: false, indexed_at: null })));
       setSelected(new Set());
       loadSite();
+    } catch (e: any) { alert(e.message); }
+    finally { setUrlAction(false); }
+  }
+
+  async function handleSetPriority(priority: string) {
+    if (selected.size === 0) return;
+    setUrlAction(true);
+    try {
+      await api.setPriority(siteName, [...selected], priority);
+      setUrls((prev) =>
+        prev.map((u) => selected.has(u.url) ? { ...u, priority } : u)
+      );
+      setSelected(new Set());
     } catch (e: any) { alert(e.message); }
     finally { setUrlAction(false); }
   }
@@ -355,6 +379,17 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             <Btn onClick={handleResetSelected} disabled={urlAction} variant="warn">
               重置选中项
             </Btn>
+            <div className="w-px mx-1" style={{ background: "var(--color-rim)" }} />
+            <span className="self-center text-xs text-slate-500">优先级:</span>
+            <Btn onClick={() => handleSetPriority("high")} disabled={urlAction} variant="warn">
+              🔴 高
+            </Btn>
+            <Btn onClick={() => handleSetPriority("normal")} disabled={urlAction} variant="ghost">
+              正常
+            </Btn>
+            <Btn onClick={() => handleSetPriority("low")} disabled={urlAction} variant="ghost">
+              低
+            </Btn>
           </>
         )}
       </div>
@@ -420,7 +455,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
           <input
             type="text"
             value={urlSearch}
-            onChange={(e) => { setUrlSearch(e.target.value); setUrlPage(1); setSelected(new Set()); }}
+            onChange={(e) => setUrlSearch(e.target.value)}
             placeholder="搜索网址…"
             className="flex-1 px-4 py-2 rounded-xl text-sm border border-white/10 bg-slate-900/50 text-slate-200 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all"
           />
@@ -454,6 +489,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                 </th>
                 <th className="text-left px-4 py-2.5 font-medium" style={{ color: "var(--color-muted)" }}>网址</th>
                 <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>状态</th>
+                <th className="text-left px-4 py-2.5 font-medium w-20" style={{ color: "var(--color-muted)" }}>优先级</th>
                 <th className="text-left px-4 py-2.5 font-medium w-28" style={{ color: "var(--color-muted)" }}>发送时间</th>
                 <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>最后修改</th>
                 <th className="text-left px-4 py-2.5 font-medium w-28" style={{ color: "var(--color-muted)" }}>GSC</th>
@@ -462,7 +498,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             <tbody>
               {urls.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm" style={{ color: "var(--color-muted)" }}>
+                  <td colSpan={7} className="px-4 py-10 text-center text-sm" style={{ color: "var(--color-muted)" }}>
                     暂无网址
                   </td>
                 </tr>
@@ -493,6 +529,15 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                       }}
                     >
                       {u.indexed ? "已发送" : "待处理"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      u.priority === "high" ? "bg-red-500/15 text-red-400" :
+                      u.priority === "low" ? "bg-slate-500/15 text-slate-400" :
+                      "bg-white/5 text-slate-500"
+                    }`}>
+                      {u.priority === "high" ? "高" : u.priority === "low" ? "低" : "正常"}
                     </span>
                   </td>
                   <td className="px-4 py-2 text-xs" style={{ color: "var(--color-muted)" }}>

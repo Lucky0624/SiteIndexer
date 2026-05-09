@@ -29,6 +29,13 @@ export const api = {
     req<any>("POST", `/api/sites/${name}/mark-indexed`, { urls }),
   resetUrls: (name: string, urls: string[]) =>
     req<any>("POST", `/api/sites/${name}/reset`, { urls }),
+  setPriority: (name: string, urls: string[], priority: string) =>
+    req<any>("POST", `/api/sites/${name}/set-priority`, { urls, priority }),
+
+  // History
+  getHistory: (site = "", limit = 50) =>
+    req<any[]>("GET", `/api/history?site=${encodeURIComponent(site)}&limit=${limit}`),
+  clearHistory: () => req<any>("DELETE", "/api/history"),
 
   // Credentials
   getCredentials: () => req<any[]>("GET", "/api/credentials"),

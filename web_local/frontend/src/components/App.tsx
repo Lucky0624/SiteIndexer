@@ -4,11 +4,13 @@ import SitesList from "./SitesList";
 import SiteDetail from "./SiteDetail";
 import Settings from "./Settings";
 import Help from "./Help";
+import History from "./History";
 
 export type View =
   | { name: "sites" }
   | { name: "site"; site: string }
   | { name: "settings" }
+  | { name: "history" }
   | { name: "help" };
 
 export default function App() {
@@ -34,6 +36,9 @@ export default function App() {
         </div>
         <div className={view.name === "help" ? "block h-full" : "hidden"}>
           <Help />
+        </div>
+        <div className={view.name === "history" ? "block h-full" : "hidden"}>
+          <History />
         </div>
       </main>
     </div>

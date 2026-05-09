@@ -7,6 +7,7 @@ interface Props {
 
 const NAV = [
   { name: "sites" as const, label: "站点" },
+  { name: "history" as const, label: "历史" },
   { name: "settings" as const, label: "设置" },
   { name: "help" as const, label: "帮助" },
 ];
