@@ -14,7 +14,7 @@ const translations = {
   "sites.subtitle": { zh: "管理你的网站并批量提交索引请求", en: "Manage your websites and submit indexing requests" },
   "sites.new": { zh: "+ 新建站点", en: "+ New Site" },
   "sites.empty": { zh: "还没有站点", en: "No sites yet" },
-  "sites.empty_hint": { zh: "点击右上角"新建站点"，添加你的第一个网站开始索引。", en: "Click \"New Site\" above to add your first website." },
+  "sites.empty_hint": { zh: "点击右上角\"新建站点\"，添加你的第一个网站开始索引。", en: "Click \"New Site\" above to add your first website." },
   "sites.all_done": { zh: "全部完成", en: "All done" },
   "sites.pending": { zh: "待处理", en: "Pending" },
   "sites.delete": { zh: "删除", en: "Delete" },
