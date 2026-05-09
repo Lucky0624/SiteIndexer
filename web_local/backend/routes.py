@@ -198,19 +198,57 @@ def get_site_stats(name: str):
 
 # --- URL listing ---
 
+from urllib.parse import urlparse
+
+def _get_category(url: str, site_url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.strip("/")
+        if not path:
+            return "Home"
+        parts = path.split("/")
+        return parts[0]
+    except:
+        return "Other"
+
+@app.get("/api/sites/{name}/categories")
+def get_categories(name: str):
+    site = get_site(name)
+    urls = load_urls(site)
+    visible = filter_urls({url: data.get("lastmod") for url, data in urls.items()}, site)
+    
+    cats = set()
+    site_url = site.get("site_url", "")
+    for url in visible:
+        cats.add(_get_category(url, site_url))
+    
+    # Sort categories, put Home first
+    sorted_cats = sorted(list(cats))
+    if "Home" in sorted_cats:
+        sorted_cats.remove("Home")
+        sorted_cats.insert(0, "Home")
+    return {"categories": sorted_cats}
+
+
 @app.get("/api/sites/{name}/urls")
-def list_urls(name: str, filter: str = "all", page: int = 1, page_size: int = 100, search: str = ""):
+def list_urls(name: str, filter: str = "all", page: int = 1, page_size: int = 100, search: str = "", category: str = "all"):
     site = get_site(name)
     urls = load_urls(site)
 
     # Apply site filters so excluded URLs are hidden from view
     # (they stay in storage to preserve their indexed state)
     visible = filter_urls({url: data.get("lastmod") for url, data in urls.items()}, site)
+    
+    site_url = site.get("site_url", "")
 
     items = []
     for url, data in urls.items():
         if url not in visible:
             continue
+        
+        if category != "all" and _get_category(url, site_url) != category:
+            continue
+            
         indexed = data.get("indexed", False)
         gsc_indexed = data.get("gsc_indexed", False)
         if filter == "pending" and indexed:
@@ -226,6 +264,7 @@ def list_urls(name: str, filter: str = "all", page: int = 1, page_size: int = 10
             "lastmod": data.get("lastmod"),
             "sc_synced_at": data.get("sc_synced_at"),
             "priority": data.get("priority", "normal"),
+            "category": _get_category(url, site_url),
         })
 
     if search:
@@ -709,6 +748,93 @@ def set_url_priority(name: str, body: PriorityUpdate):
             updated += 1
     save_urls_to_file(existing, str(urls_path(site)))
     return {"updated": updated}
+
+
+# --- Bing IndexNow ---
+
+INDEXNOW_ENDPOINT = "https://api.indexnow.org/IndexNow"
+
+class IndexNowConfig(BaseModel):
+    key: str = ""
+
+@app.get("/api/indexnow/config")
+def get_indexnow_config():
+    config = get_config()
+    return {"key": config.get("indexnow_key", "")}
+
+@app.post("/api/indexnow/config")
+def save_indexnow_config(body: IndexNowConfig):
+    config = get_config()
+    config["indexnow_key"] = body.key
+    save_config(config)
+    return {"ok": True}
+
+@app.get("/api/sites/{name}/submit-bing/stream")
+def submit_bing_stream(name: str):
+    site = get_site(name)
+    config = get_config()
+    api_key = config.get("indexnow_key", "")
+
+    def generate():
+        import requests as http_requests
+        def send(event: dict) -> str:
+            return f"data: {json.dumps(event)}\n\n"
+
+        if not api_key:
+            yield send({"type": "error", "message": "未配置 IndexNow API Key，请先在设置中填写。"})
+            return
+
+        yield send({"type": "status", "message": "正在准备提交到 Bing IndexNow..."})
+
+        existing = load_urls(site)
+        visible = filter_urls({url: data.get("lastmod") for url, data in existing.items()}, site)
+        pending_urls = [u for u in visible if not existing.get(u, {}).get("bing_submitted")]
+
+        if not pending_urls:
+            yield send({"type": "done", "submitted": 0, "message": "所有 URL 均已提交过 Bing。"})
+            return
+
+        yield send({"type": "status", "message": f"共 {len(pending_urls)} 个 URL 待提交到 Bing"})
+
+        # Parse host from first URL
+        from urllib.parse import urlparse
+        host = urlparse(pending_urls[0]).netloc
+
+        # IndexNow supports batch of up to 10000 URLs
+        batch_size = 500
+        total_submitted = 0
+
+        for i in range(0, len(pending_urls), batch_size):
+            batch = pending_urls[i:i + batch_size]
+            try:
+                payload = {
+                    "host": host,
+                    "key": api_key,
+                    "urlList": batch,
+                }
+                resp = http_requests.post(
+                    INDEXNOW_ENDPOINT,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=30,
+                )
+                if resp.status_code in (200, 202):
+                    for url in batch:
+                        if url in existing:
+                            existing[url]["bing_submitted"] = str(date.today())
+                    total_submitted += len(batch)
+                    save_urls_to_file(existing, str(urls_path(site)))
+                    yield send({"type": "progress", "submitted": total_submitted, "total": len(pending_urls)})
+                else:
+                    yield send({"type": "error", "message": f"Bing 返回状态码 {resp.status_code}: {resp.text[:200]}"})
+                    return
+            except Exception as e:
+                yield send({"type": "error", "message": f"提交到 Bing 出错: {str(e)}"})
+                return
+
+        yield send({"type": "done", "submitted": total_submitted, "message": f"成功提交 {total_submitted} 个 URL 到 Bing"})
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
 # ---------------------------------------------------------------------------

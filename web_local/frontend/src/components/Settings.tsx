@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 interface Credential {
   filename: string;
@@ -8,6 +9,7 @@ interface Credential {
 }
 
 export default function Settings() {
+  const { t } = useI18n();
   const [creds, setCreds] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -16,10 +18,16 @@ export default function Settings() {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const [indexNowKey, setIndexNowKey] = useState("");
+  const [savingKey, setSavingKey] = useState(false);
+  const [savedKey, setSavedKey] = useState(false);
+
   async function load() {
     try {
       const data = await api.getCredentials();
       setCreds(data);
+      const conf = await api.getIndexNowConfig();
+      setIndexNowKey(conf.key || "");
     } finally {
       setLoading(false);
     }
@@ -29,7 +37,7 @@ export default function Settings() {
 
   async function doUpload(file: File) {
     if (!file.name.endsWith(".json")) {
-      setUploadError("只能上传 .json 格式的服务账户密钥文件。");
+      setUploadError("只能上传 .json 格式的服务账户密钥文件。 / Only .json files allowed.");
       return;
     }
     setUploading(true);
@@ -47,7 +55,7 @@ export default function Settings() {
         throw new Error(err.detail ?? res.statusText);
       }
       const data = await res.json();
-      setUploadSuccess(`✓ 上传成功：${data.client_email}`);
+      setUploadSuccess(`✓ ${data.client_email}`);
       load();
     } catch (e: any) {
       setUploadError(e.message);
@@ -71,24 +79,38 @@ export default function Settings() {
   }
 
   async function handleDelete(filename: string) {
-    if (!confirm(`确定要删除凭据 "${filename}" 吗？`)) return;
+    if (!confirm(`${t("common.delete")} "${filename}" ?`)) return;
     await api.deleteCredential(filename);
     load();
+  }
+
+  async function handleSaveIndexNow() {
+    setSavingKey(true);
+    setSavedKey(false);
+    try {
+      await api.saveIndexNowConfig(indexNowKey);
+      setSavedKey(true);
+      setTimeout(() => setSavedKey(false), 3000);
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setSavingKey(false);
+    }
   }
 
   return (
     <div className="p-8 max-w-2xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">设置</h1>
-        <p className="text-sm text-slate-500 mt-1">管理 Google 服务账户凭据</p>
+        <h1 className="text-2xl font-bold text-white">{t("settings.title")}</h1>
+        <p className="text-sm text-slate-500 mt-1">{t("settings.subtitle")}</p>
       </div>
 
       {/* Upload Section */}
       <section className="rounded-2xl border border-white/10 p-6 mb-6 bg-slate-900/50 backdrop-blur-xl shadow-xl">
-        <h2 className="font-semibold text-white mb-1">Google 服务账户</h2>
+        <h2 className="font-semibold text-white mb-1">{t("settings.google_sa")}</h2>
         <p className="text-sm text-slate-400 mb-5">
-          上传您的 Google 服务账户 JSON 密钥文件以调用 Google Indexing API。
-          每个 GCP 项目每天最多允许提交 <strong className="text-white">200 个 URL</strong>。
+          {t("settings.upload_desc")}<br/>
+          {t("settings.quota_per_day")} <strong className="text-white">{t("settings.urls_per_day")}</strong>。
         </p>
 
         <label
@@ -106,9 +128,9 @@ export default function Settings() {
           </div>
           <div className="text-center">
             <p className="text-sm font-semibold text-white">
-              {uploading ? "上传中…" : "点击或拖拽上传服务账户 JSON"}
+              {uploading ? t("settings.uploading") : t("settings.upload_drag")}
             </p>
-            <p className="text-xs text-slate-500 mt-1">仅支持 Google 服务账户密钥文件 (.json)</p>
+            <p className="text-xs text-slate-500 mt-1">{t("settings.upload_hint")}</p>
           </div>
           <input
             ref={inputRef}
@@ -134,17 +156,45 @@ export default function Settings() {
         )}
       </section>
 
+      {/* Bing IndexNow Section */}
+      <section className="rounded-2xl border border-white/10 p-6 mb-6 bg-slate-900/50 backdrop-blur-xl shadow-xl">
+        <h2 className="font-semibold text-white mb-1">{t("settings.bing_title")}</h2>
+        <p className="text-sm text-slate-400 mb-5">
+          {t("settings.bing_desc")}
+        </p>
+
+        <div className="flex flex-col gap-2">
+          <label className="text-xs font-medium text-slate-300">{t("settings.bing_key")}</label>
+          <div className="flex gap-3">
+            <input
+              type="text"
+              value={indexNowKey}
+              onChange={(e) => setIndexNowKey(e.target.value)}
+              placeholder={t("settings.bing_key_hint")}
+              className="flex-1 px-4 py-2.5 rounded-xl text-sm border border-white/10 bg-slate-900/50 text-slate-200 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all"
+            />
+            <button
+              onClick={handleSaveIndexNow}
+              disabled={savingKey}
+              className="px-6 py-2.5 rounded-xl text-sm font-medium bg-violet-600 hover:bg-violet-500 text-white transition-all disabled:opacity-50"
+            >
+              {savingKey ? "..." : savedKey ? t("settings.saved") : t("settings.save")}
+            </button>
+          </div>
+        </div>
+      </section>
+
       {/* Credentials List */}
       <section className="mb-6">
-        <h2 className="font-semibold text-white mb-4">已存储的凭据</h2>
+        <h2 className="font-semibold text-white mb-4">{t("settings.stored")}</h2>
         {loading ? (
           <div className="flex items-center gap-3 text-sm text-slate-500 p-4">
             <div className="w-4 h-4 border-2 border-violet-500/40 border-t-violet-500 rounded-full animate-spin" />
-            加载中…
+            {t("sites.loading")}
           </div>
         ) : creds.length === 0 ? (
           <div className="border border-dashed border-white/10 rounded-2xl p-10 text-center bg-slate-900/30">
-            <p className="text-slate-500 text-sm">暂无存储的凭据。请上传一个服务账户 JSON 文件。</p>
+            <p className="text-slate-500 text-sm">{t("settings.no_creds")}</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -156,14 +206,14 @@ export default function Settings() {
                 <div className="min-w-0">
                   <p className="text-sm font-mono text-violet-300 truncate">{c.client_email}</p>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    项目: {c.project_id} · <span className="text-slate-600">{c.filename}</span>
+                    {t("settings.project")}: {c.project_id} · <span className="text-slate-600">{c.filename}</span>
                   </p>
                 </div>
                 <button
                   onClick={() => handleDelete(c.filename)}
                   className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"
                 >
-                  删除
+                  {t("common.delete")}
                 </button>
               </div>
             ))}
@@ -176,16 +226,12 @@ export default function Settings() {
         <div className="flex items-start gap-3">
           <span className="text-2xl">💡</span>
           <div>
-            <h2 className="font-semibold text-white mb-2">关于配额限制</h2>
+            <h2 className="font-semibold text-white mb-2">{t("settings.quota_title")}</h2>
             <p className="text-sm text-slate-400 leading-relaxed">
-              Google Indexing API 每个 GCP 项目每天允许{" "}
-              <strong className="text-amber-400">200 个 URL 提交</strong>。
-              配额是按<strong className="text-white">项目</strong>计算的，而非按服务账户 ——
-              同一项目下的多个服务账户共享同一配额。
+              {t("settings.quota_desc")} <strong className="text-amber-400">200</strong> URL。
             </p>
             <p className="text-sm text-slate-400 mt-2 leading-relaxed">
-              通过添加来自<strong className="text-white">不同 GCP 项目</strong>的服务账户，
-              可以叠加配额（例如 3 个项目 = 每天 600 个 URL）。
+              {t("settings.quota_tip")}。
             </p>
           </div>
         </div>

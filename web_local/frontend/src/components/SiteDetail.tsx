@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { View } from "./App";
 import SiteForm from "./SiteForm";
 import AnalyticsCharts from "./AnalyticsCharts";
+import { useI18n } from "../lib/i18n";
 
 interface Props {
   site: string;
@@ -12,9 +13,12 @@ interface Props {
 type InlineLog = { text: string; kind: "info" | "ok" | "error" | "url" };
 
 export default function SiteDetail({ site: siteName, navigate }: Props) {
+  const { t } = useI18n();
   const [site, setSite] = useState<any>(null);
   const [urls, setUrls] = useState<any[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [urlFilter, setUrlFilter] = useState<"all" | "pending" | "indexed">("all");
+  const [urlCategory, setUrlCategory] = useState<string>("all");
   const [urlSearch, setUrlSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [urlPage, setUrlPage] = useState(1);
@@ -43,10 +47,13 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     api.getSiteStats(siteName).then(setSite);
   }
 
-  function loadUrls(filter = urlFilter, page = urlPage, search = urlSearch) {
-    api.getUrls(siteName, filter, page, PAGE_SIZE, search).then((r) => {
+  function loadUrls(filter = urlFilter, page = urlPage, search = urlSearch, category = urlCategory) {
+    api.getUrls(siteName, filter, page, PAGE_SIZE, search, category).then((r) => {
       setUrls(r.data);
       setUrlTotal(r.total);
+    });
+    api.getCategories(siteName).then((r) => {
+      setCategories(r.categories);
     });
   }
 
@@ -57,8 +64,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   }, [siteName]);
 
   useEffect(() => {
-    loadUrls(urlFilter, urlPage, debouncedSearch);
-  }, [urlFilter, urlPage, debouncedSearch]);
+    loadUrls(urlFilter, urlPage, debouncedSearch, urlCategory);
+  }, [urlFilter, urlPage, debouncedSearch, urlCategory]);
 
   // Debounce search input by 300ms
   useEffect(() => {
@@ -213,7 +220,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   }
 
   async function handleResetAll() {
-    if (!confirm("确定要重置所有 URL 为待处理吗？")) return;
+    if (!confirm(t("detail.confirm_reset_all"))) return;
     setUrlAction(true);
     try {
       await api.resetUrls(siteName, []);
@@ -252,7 +259,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
 
   if (!site) return (
     <div className="flex items-center justify-center h-full text-sm" style={{ color: "var(--color-muted)" }}>
-      加载中…
+      {t("sites.loading")}
     </div>
   );
 
@@ -271,7 +278,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             className="text-xs mb-1 block"
             style={{ color: "var(--color-muted)" }}
           >
-            ← 站点
+            {t("detail.back")}
           </button>
           <h1 className="text-xl font-semibold">{site.name}</h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>{site.sitemap_url}</p>
@@ -305,9 +312,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   (e.currentTarget as HTMLElement).style.background = "var(--color-accent-hover)";
               }}
               onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--color-accent)")}
-              title={site.credentials?.length === 0 ? "未配置凭据" : ""}
             >
-              ▶ 运行索引
+              {t("detail.run")}
             </button>
           )}
         </div>
@@ -358,37 +364,40 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         className="flex flex-wrap gap-3 rounded-2xl border border-white/10 p-4 bg-slate-900/60 backdrop-blur-xl shadow-xl"
       >
         <Btn onClick={handleFetchUrls} disabled={urlAction || panel.running} variant="dark">
-          获取网址
+          {t("detail.fetch")}
         </Btn>
         <Btn onClick={handleSyncGsc} disabled={urlAction || panel.running} variant="purple">
-          从 GSC 同步
+          {t("detail.sync_gsc")}
+        </Btn>
+        <Btn onClick={handleSubmitBing} disabled={urlAction || panel.running} variant="purple">
+          {t("detail.submit_bing")}
         </Btn>
         <div className="w-px mx-1" style={{ background: "var(--color-rim)" }} />
         <Btn onClick={handleResetAll} disabled={urlAction || panel.running} variant="ghost">
-          重置全部
+          {t("detail.reset_all")}
         </Btn>
         {selected.size > 0 && (
           <>
             <div className="w-px mx-1" style={{ background: "var(--color-rim)" }} />
             <span className="self-center text-sm" style={{ color: "var(--color-muted)" }}>
-              已选择 {selected.size} 个
+              {t("detail.selected")} {selected.size} {t("detail.items")}
             </span>
             <Btn onClick={handleMarkIndexed} disabled={urlAction} variant="green">
-              标记已发送
+              {t("detail.mark_sent")}
             </Btn>
             <Btn onClick={handleResetSelected} disabled={urlAction} variant="warn">
-              重置选中项
+              {t("detail.reset_selected")}
             </Btn>
             <div className="w-px mx-1" style={{ background: "var(--color-rim)" }} />
-            <span className="self-center text-xs text-slate-500">优先级:</span>
+            <span className="self-center text-xs text-slate-500">{t("detail.priority")}</span>
             <Btn onClick={() => handleSetPriority("high")} disabled={urlAction} variant="warn">
-              🔴 高
+              🔴 {t("detail.priority_high")}
             </Btn>
             <Btn onClick={() => handleSetPriority("normal")} disabled={urlAction} variant="ghost">
-              正常
+              {t("detail.priority_normal")}
             </Btn>
             <Btn onClick={() => handleSetPriority("low")} disabled={urlAction} variant="ghost">
-              低
+              {t("detail.priority_low")}
             </Btn>
           </>
         )}
@@ -451,26 +460,36 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
       {/* URL table */}
       <div>
         {/* Search + Filter tabs */}
-        <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center gap-3 mb-3 flex-wrap">
           <input
             type="text"
             value={urlSearch}
             onChange={(e) => setUrlSearch(e.target.value)}
-            placeholder="搜索网址…"
-            className="flex-1 px-4 py-2 rounded-xl text-sm border border-white/10 bg-slate-900/50 text-slate-200 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all"
+            placeholder={t("detail.search")}
+            className="flex-1 px-4 py-2 rounded-xl text-sm border border-white/10 bg-slate-900/50 text-slate-200 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all min-w-[200px]"
           />
+          <select
+            value={urlCategory}
+            onChange={(e) => { setUrlCategory(e.target.value); setUrlPage(1); setSelected(new Set()); }}
+            className="px-4 py-2 rounded-xl text-sm border border-white/10 bg-slate-900/50 text-slate-200 outline-none focus:border-violet-500 transition-all"
+          >
+            <option value="all">{t("detail.all_categories")}</option>
+            {categories.map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
           <div className="flex gap-1 shrink-0">
           {(["all", "pending", "indexed"] as const).map((f) => (
             <button
               key={f}
               onClick={() => { setUrlFilter(f); setUrlPage(1); setSelected(new Set()); }}
-              className="text-sm px-3 py-1.5 rounded-full capitalize transition-colors"
+              className="text-sm px-3 py-1.5 rounded-full transition-colors"
               style={{
                 background: urlFilter === f ? "var(--color-accent)" : "rgba(255,255,255,0.05)",
                 color: urlFilter === f ? "#fff" : "var(--color-muted)",
               }}
             >
-              {f === "all" ? "全部" : f === "pending" ? "待处理" : "已索引"}
+              {f === "all" ? t("detail.all") : f === "pending" ? t("detail.pending_count") : t("detail.indexed")}
             </button>
           ))}
           </div>
@@ -487,11 +506,12 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                     onChange={toggleSelectAll}
                   />
                 </th>
-                <th className="text-left px-4 py-2.5 font-medium" style={{ color: "var(--color-muted)" }}>网址</th>
-                <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>状态</th>
-                <th className="text-left px-4 py-2.5 font-medium w-20" style={{ color: "var(--color-muted)" }}>优先级</th>
-                <th className="text-left px-4 py-2.5 font-medium w-28" style={{ color: "var(--color-muted)" }}>发送时间</th>
-                <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>最后修改</th>
+                <th className="text-left px-4 py-2.5 font-medium" style={{ color: "var(--color-muted)" }}>{t("detail.url")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>{t("detail.category")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>{t("detail.status")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-20" style={{ color: "var(--color-muted)" }}>{t("detail.priority_label")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-28" style={{ color: "var(--color-muted)" }}>{t("detail.sent_time")}</th>
+                <th className="text-left px-4 py-2.5 font-medium w-24" style={{ color: "var(--color-muted)" }}>{t("detail.lastmod")}</th>
                 <th className="text-left px-4 py-2.5 font-medium w-28" style={{ color: "var(--color-muted)" }}>GSC</th>
               </tr>
             </thead>
@@ -520,6 +540,9 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                       {u.url}
                     </a>
                   </td>
+                  <td className="px-4 py-2 text-xs" style={{ color: "var(--color-muted)" }}>
+                    {u.category}
+                  </td>
                   <td className="px-4 py-2">
                     <span
                       className="px-2 py-0.5 rounded-full text-xs font-medium"
@@ -528,7 +551,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                         color: u.indexed ? "var(--color-accent-hover)" : "var(--color-warn)",
                       }}
                     >
-                      {u.indexed ? "已发送" : "待处理"}
+                      {u.indexed ? t("detail.sent") : t("sites.pending")}
                     </span>
                   </td>
                   <td className="px-4 py-2">
@@ -537,7 +560,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                       u.priority === "low" ? "bg-slate-500/15 text-slate-400" :
                       "bg-white/5 text-slate-500"
                     }`}>
-                      {u.priority === "high" ? "高" : u.priority === "low" ? "低" : "正常"}
+                      {u.priority === "high" ? t("detail.priority_high") : u.priority === "low" ? t("detail.priority_low") : t("detail.priority_normal")}
                     </span>
                   </td>
                   <td className="px-4 py-2 text-xs" style={{ color: "var(--color-muted)" }}>

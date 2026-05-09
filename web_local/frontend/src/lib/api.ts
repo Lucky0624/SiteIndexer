@@ -22,8 +22,9 @@ export const api = {
   deleteSite: (name: string) => req<any>("DELETE", `/api/sites/${name}`),
 
   // URLs
-  getUrls: (name: string, filter = "all", page = 1, pageSize = 100, search = "") =>
-    req<any>("GET", `/api/sites/${name}/urls?filter=${filter}&page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}`),
+  getCategories: (name: string) => req<{categories: string[]}>("GET", `/api/sites/${name}/categories`),
+  getUrls: (name: string, filter = "all", page = 1, pageSize = 100, search = "", category = "all") =>
+    req<any>("GET", `/api/sites/${name}/urls?filter=${filter}&page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}&category=${encodeURIComponent(category)}`),
   fetchUrls: (name: string) => req<any>("POST", `/api/sites/${name}/fetch-urls`),
   markIndexed: (name: string, urls: string[]) =>
     req<any>("POST", `/api/sites/${name}/mark-indexed`, { urls }),
@@ -40,6 +41,11 @@ export const api = {
   // Credentials
   getCredentials: () => req<any[]>("GET", "/api/credentials"),
   deleteCredential: (filename: string) => req<any>("DELETE", `/api/credentials/${filename}`),
+
+  // IndexNow (Bing)
+  getIndexNowConfig: () => req<any>("GET", "/api/indexnow/config"),
+  saveIndexNowConfig: (key: string) => req<any>("POST", "/api/indexnow/config", { key }),
+  submitBingStreamUrl: (name: string) => `${BASE}/api/sites/${name}/submit-bing/stream`,
 
   // SSE URLs (opened by EventSource, not fetch)
   runStreamUrl: (name: string) => `${BASE}/api/sites/${name}/run/stream`,

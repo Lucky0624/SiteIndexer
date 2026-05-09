@@ -1,18 +1,22 @@
 import type { View } from "./App";
+import { useI18n } from "../lib/i18n";
+import { useTheme } from "../lib/theme";
 
 interface Props {
   view: View;
   navigate: (v: View) => void;
 }
 
-const NAV = [
-  { name: "sites" as const, label: "站点" },
-  { name: "history" as const, label: "历史" },
-  { name: "settings" as const, label: "设置" },
-  { name: "help" as const, label: "帮助" },
+const NAV_KEYS = [
+  { name: "sites" as const, key: "nav.sites" as const },
+  { name: "history" as const, key: "nav.history" as const },
+  { name: "settings" as const, key: "nav.settings" as const },
+  { name: "help" as const, key: "nav.help" as const },
 ];
 
 export default function Sidebar({ view, navigate }: Props) {
+  const { t, lang, setLang } = useI18n();
+  const { theme, toggle } = useTheme();
   const active = view.name === "site" ? "sites" : view.name;
 
   return (
@@ -29,7 +33,7 @@ export default function Sidebar({ view, navigate }: Props) {
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-3 space-y-0.5 text-sm">
-        {NAV.map((item) => {
+        {NAV_KEYS.map((item) => {
           const isActive = active === item.name;
           return (
             <button
@@ -41,14 +45,28 @@ export default function Sidebar({ view, navigate }: Props) {
                   : "text-slate-400 hover:text-white hover:bg-white/10"
               }`}
             >
-              {item.label}
+              {t(item.key)}
             </button>
           );
         })}
       </nav>
 
-      <div className="px-4 py-3 border-t border-white/5 text-xs text-slate-500">
-        local
+      {/* Toggles */}
+      <div className="px-4 py-3 border-t border-white/5 text-xs text-slate-500 flex justify-between items-center">
+        <div className="flex gap-2">
+          <button
+            onClick={() => setLang(lang === "zh" ? "en" : "zh")}
+            className="hover:text-slate-300 transition-colors"
+          >
+            {lang === "zh" ? "EN" : "中"}
+          </button>
+          <button
+            onClick={toggle}
+            className="hover:text-slate-300 transition-colors"
+          >
+            {theme === "dark" ? "☀️ " + t("theme.light") : "🌙 " + t("theme.dark")}
+          </button>
+        </div>
       </div>
     </aside>
   );
