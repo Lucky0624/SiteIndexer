@@ -55,6 +55,16 @@ const translations = {
   "detail.gsc_indexed": { zh: "GSC 已收录", en: "GSC Indexed" },
   "detail.pending_count": { zh: "待处理", en: "Pending" },
   "detail.all_categories": { zh: "全部分类", en: "All Categories" },
+  "detail.tab_google": { zh: "Google 索引", en: "Google Indexing" },
+  "detail.tab_bing": { zh: "Bing IndexNow", en: "Bing IndexNow" },
+  "detail.bing_help_title": { zh: "如何验证 Bing IndexNow？", en: "How to verify Bing IndexNow?" },
+  "detail.bing_help_p1": { zh: "如果点击提交后出现 403 错误，说明 Bing 需要验证你的网站所有权。只需完成以下步骤：", en: "If you get a 403 error, Bing needs to verify site ownership. Follow these steps:" },
+  "detail.bing_help_s1": { zh: "1. 复制你的 API Key", en: "1. Copy your API Key" },
+  "detail.bing_help_s2": { zh: "2. 在电脑上创建一个以该 Key 命名的纯文本文件，例如", en: "2. Create a text file named after the Key, e.g." },
+  "detail.bing_help_s3": { zh: "3. 在这个文件里面只写入一行内容，也就是你的 Key 本身，不要有空格或换行。", en: "3. Write only your Key inside the file, with no spaces or newlines." },
+  "detail.bing_help_s4": { zh: "4. 将这个文件上传到你的网站根目录，确保通过浏览器访问", en: "4. Upload this file to your website's root directory, ensuring it's accessible via" },
+  "detail.bing_help_s5": { zh: "能正常打开。", en: "can be opened normally." },
+  "detail.bing_help_s6": { zh: "5. 完成后，再次点击提交，403 错误就会消失啦！", en: "5. Once done, click submit again, and the 403 error will disappear!" },
 
   // Settings
   "settings.title": { zh: "设置", en: "Settings" },

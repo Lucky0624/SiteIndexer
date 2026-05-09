@@ -21,6 +21,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   const [urlCategory, setUrlCategory] = useState<string>("all");
   const [urlSearch, setUrlSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [activeTab, setActiveTab] = useState<"google" | "bing">("google");
   const [urlPage, setUrlPage] = useState(1);
   const [urlTotal, setUrlTotal] = useState(0);
   const PAGE_SIZE = 100;
@@ -305,7 +306,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     : 0;
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6">
+    <div className="p-6 max-w-[90rem] mx-auto space-y-6">
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
@@ -330,86 +331,168 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
           >
             编辑
           </button>
-          {panel.running ? (
-            <button
-              onClick={handleStop}
-              className="px-4 py-2 rounded-lg text-sm font-medium"
-              style={{ background: "var(--color-danger)", color: "#fff" }}
-            >
-              停止
-            </button>
-          ) : (
-            <button
-              onClick={handleRun}
-              disabled={site.credentials?.length === 0}
-              className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-40"
-              style={{ background: "var(--color-accent)", color: "#fff" }}
-              onMouseEnter={(e) => {
-                if (site.credentials?.length > 0)
-                  (e.currentTarget as HTMLElement).style.background = "var(--color-accent-hover)";
-              }}
-              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--color-accent)")}
-            >
-              {t("detail.run")}
-            </button>
-          )}
         </div>
       </div>
 
-      {/* Stats and Charts */}
-      <AnalyticsCharts 
-        total={site.urls_total} 
-        indexed={site.urls_indexed} 
-        pending={site.urls_pending} 
-        gscIndexed={site.urls_gsc_indexed ?? 0}
-      />
-
-      {/* Quota bars */}
-      {site.quota?.length > 0 && (
-        <div
-          className="rounded-2xl border border-white/10 p-5 space-y-4 bg-slate-900/60 backdrop-blur-xl shadow-xl"
+      {/* Tabs Navigation */}
+      <div className="flex space-x-1 rounded-xl bg-slate-900/40 p-1 backdrop-blur-md border border-white/5 w-max shadow-sm">
+        <button
+          onClick={() => setActiveTab("google")}
+          className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 ${
+            activeTab === "google" ? "bg-slate-800 text-white shadow-md border border-white/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+          }`}
         >
-          <p className="text-sm font-medium">今日配额</p>
-          {site.quota.map((q: any) => (
-            <div key={q.credentials_file}>
-              <div className="flex justify-between text-xs mb-1.5" style={{ color: "var(--color-muted)" }}>
-                <span className="font-mono">{q.credentials_name}</span>
-                <span style={{
-                  color: q.remaining === 0 ? "var(--color-danger)" :
-                    q.remaining < 50 ? "var(--color-warn)" : "var(--color-success)"
-                }}>
-                  {q.used} / {q.limit} 已使用 · {q.remaining} 剩余
-                </span>
-              </div>
-              <div className="rounded-full h-1.5" style={{ background: "var(--color-rim)" }}>
-                <div
-                  className="h-1.5 rounded-full transition-all"
-                  style={{
-                    width: `${Math.min(100, (q.used / q.limit) * 100)}%`,
-                    background: q.remaining === 0 ? "var(--color-danger)" :
-                      q.remaining < 50 ? "var(--color-warn)" : "var(--color-accent)",
-                  }}
-                />
+          {t("detail.tab_google")}
+        </button>
+        <button
+          onClick={() => setActiveTab("bing")}
+          className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 ${
+            activeTab === "bing" ? "bg-slate-800 text-white shadow-md border border-white/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+          }`}
+        >
+          {t("detail.tab_bing")}
+        </button>
+      </div>
+
+      {activeTab === "google" && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          {/* Stats and Charts */}
+          <AnalyticsCharts 
+            total={site.urls_total} 
+            indexed={site.urls_indexed} 
+            pending={site.urls_pending} 
+            gscIndexed={site.urls_gsc_indexed ?? 0}
+          />
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Google Actions */}
+            <div className="rounded-2xl border border-white/10 p-5 space-y-4 bg-slate-900/60 backdrop-blur-xl shadow-xl">
+              <h2 className="text-sm font-medium text-slate-200 mb-2">Google API 提交与同步</h2>
+              <p className="text-xs text-slate-400 mb-4">通过 Google Indexing API 批量提交网址，或从 Google Search Console 同步最新收录状态。</p>
+              <div className="flex flex-wrap gap-3">
+                {panel.running ? (
+                  <button
+                    onClick={handleStop}
+                    className="px-4 py-2 rounded-lg text-sm font-medium"
+                    style={{ background: "var(--color-danger)", color: "#fff" }}
+                  >
+                    停止
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleRun}
+                    disabled={site.credentials?.length === 0 || urlAction}
+                    className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-40"
+                    style={{ background: "var(--color-accent)", color: "#fff" }}
+                    onMouseEnter={(e) => {
+                      if (site.credentials?.length > 0 && !urlAction)
+                        (e.currentTarget as HTMLElement).style.background = "var(--color-accent-hover)";
+                    }}
+                    onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--color-accent)")}
+                  >
+                    {t("detail.run")}
+                  </button>
+                )}
+                <Btn onClick={handleSyncGsc} disabled={urlAction || panel.running} variant="purple">
+                  {t("detail.sync_gsc")}
+                </Btn>
               </div>
             </div>
-          ))}
+
+            {/* Quota bars */}
+            {site.quota?.length > 0 && (
+              <div className="rounded-2xl border border-white/10 p-5 space-y-4 bg-slate-900/60 backdrop-blur-xl shadow-xl">
+                <p className="text-sm font-medium">今日配额</p>
+                <div className="space-y-4 max-h-32 overflow-y-auto pr-2">
+                  {site.quota.map((q: any) => (
+                    <div key={q.credentials_file}>
+                      <div className="flex justify-between text-xs mb-1.5" style={{ color: "var(--color-muted)" }}>
+                        <span className="font-mono truncate mr-2" title={q.credentials_name}>{q.credentials_name}</span>
+                        <span className="shrink-0" style={{
+                          color: q.remaining === 0 ? "var(--color-danger)" :
+                            q.remaining < 50 ? "var(--color-warn)" : "var(--color-success)"
+                        }}>
+                          {q.used} / {q.limit} 已使用 · {q.remaining} 剩余
+                        </span>
+                      </div>
+                      <div className="rounded-full h-1.5" style={{ background: "var(--color-rim)" }}>
+                        <div
+                          className="h-1.5 rounded-full transition-all"
+                          style={{
+                            width: `${Math.min(100, (q.used / q.limit) * 100)}%`,
+                            background: q.remaining === 0 ? "var(--color-danger)" :
+                              q.remaining < 50 ? "var(--color-warn)" : "var(--color-accent)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Actions bar */}
+      {activeTab === "bing" && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Bing Actions */}
+            <div className="rounded-2xl border border-white/10 p-5 bg-slate-900/60 backdrop-blur-xl shadow-xl flex flex-col justify-between">
+              <div>
+                <h2 className="text-lg font-medium text-slate-200 mb-2">{t("detail.tab_bing")}</h2>
+                <p className="text-sm text-slate-400 mb-6 leading-relaxed">
+                  {t("detail.bing_help_p1")}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                {panel.running ? (
+                  <button
+                    onClick={handleStop}
+                    className="px-4 py-2 rounded-lg text-sm font-medium"
+                    style={{ background: "var(--color-danger)", color: "#fff" }}
+                  >
+                    停止
+                  </button>
+                ) : (
+                  <Btn onClick={handleSubmitBing} disabled={urlAction || panel.running} variant="purple">
+                    {t("detail.submit_bing")}
+                  </Btn>
+                )}
+              </div>
+            </div>
+
+            {/* Bing Help Guide */}
+            <div className="rounded-2xl border border-white/5 bg-slate-800/40 p-5 shadow-inner">
+              <p className="font-semibold text-slate-200 mb-3 flex items-center gap-2">
+                <span className="text-amber-400 text-lg">💡</span>
+                {t("detail.bing_help_title")}
+              </p>
+              <div className="space-y-2.5 text-sm text-slate-400">
+                <p className="flex gap-2"><span>1.</span><span>{t("detail.bing_help_s1")}</span></p>
+                <p className="flex gap-2">
+                  <span>2.</span>
+                  <span>{t("detail.bing_help_s2")} <code className="text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded ml-1 font-mono text-xs">yourkey.txt</code></span>
+                </p>
+                <p className="flex gap-2"><span>3.</span><span>{t("detail.bing_help_s3")}</span></p>
+                <p className="flex gap-2">
+                  <span>4.</span>
+                  <span>{t("detail.bing_help_s4")} <code className="text-violet-400 font-mono text-xs mx-1">https://yourdomain.com/yourkey.txt</code> {t("detail.bing_help_s5")}</span>
+                </p>
+                <p className="flex gap-2 text-slate-300"><span>5.</span><span>{t("detail.bing_help_s6")}</span></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* General URL Management Actions */}
       <div
         className="flex flex-wrap gap-3 rounded-2xl border border-white/10 p-4 bg-slate-900/60 backdrop-blur-xl shadow-xl"
       >
         <Btn onClick={handleFetchUrls} disabled={urlAction || panel.running} variant="dark">
           {t("detail.fetch")}
         </Btn>
-        <Btn onClick={handleSyncGsc} disabled={urlAction || panel.running} variant="purple">
-          {t("detail.sync_gsc")}
-        </Btn>
-        <Btn onClick={handleSubmitBing} disabled={urlAction || panel.running} variant="purple">
-          {t("detail.submit_bing")}
-        </Btn>
-        <div className="w-px mx-1" style={{ background: "var(--color-rim)" }} />
         <Btn onClick={handleResetAll} disabled={urlAction || panel.running} variant="ghost">
           {t("detail.reset_all")}
         </Btn>
