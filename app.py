@@ -276,7 +276,7 @@ class DashboardScreen(ctk.CTkFrame):
 
             self._log(f"Fetching sitemap: {site['sitemap_url']}")
             try:
-                sitemap_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"])
+                sitemap_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site.get("proxy"))
             except Exception as e:
                 self._log(f"ERROR fetching sitemap: {e}")
                 return
@@ -522,7 +522,7 @@ class URLsScreen(ctk.CTkFrame):
 
         def worker():
             try:
-                sitemap_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"], set())
+                sitemap_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site.get("proxy"))
                 sitemap_urls = filter_urls(sitemap_urls, site)
                 existing = migrate_urls(load_json(data_path(site["urls_file"])))
 

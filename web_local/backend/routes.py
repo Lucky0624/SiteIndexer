@@ -514,7 +514,7 @@ def run_stream(name: str):
         try:
             # Fetch sitemap
             yield send({"type": "status", "message": "正在获取 sitemap..."})
-            raw = fetch_urls_from_sitemap_recursive(site["sitemap_url"])
+            raw = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site.get("proxy"))
             filtered = filter_urls(raw, site)
             yield send({"type": "urls_found", "count": len(filtered)})
 
