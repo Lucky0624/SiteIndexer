@@ -13,6 +13,8 @@ interface UrlRow {
   indexed_at: string | null;
   lastmod: string | null;
   sc_synced_at: string | null;
+  category: string | null;
+  category_updated_at: string | null;
 }
 
 interface PageData {
@@ -37,6 +39,7 @@ interface LogLine {
 }
 
 export default function UrlsTable({ site, navigate }: Props) {
+  const { t } = useI18n();
   const [filter, setFilter] = useState<"all" | "pending" | "indexed" | "gsc_indexed">("all");
   const [page, setPage] = useState(1);
   const pageSize = 100;
@@ -55,6 +58,10 @@ export default function UrlsTable({ site, navigate }: Props) {
   const [runLog, setRunLog] = useState<LogLine[]>([]);
   const [running, setRunning] = useState(false);
   const [runProgress, setRunProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // Inspect state
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectLog, setInspectLog] = useState<LogLine[]>([]);
 
   async function load() {
     setLoading(true);
@@ -186,6 +193,59 @@ export default function UrlsTable({ site, navigate }: Props) {
     }
   }
 
+  // Inspect selected URLs
+  async function handleInspect() {
+    if (selected.size === 0) return;
+    const urlsList = Array.from(selected);
+    setInspectLog([]);
+    setInspecting(true);
+
+    try {
+      const response = await api.inspectStream(site, urlsList);
+      if (!response.ok) {
+        setInspectLog([{ type: "error", message: "无法启动检测" }]);
+        setInspecting(false);
+        return;
+      }
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() ?? "";
+
+        for (const chunk of chunks) {
+          const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!dataLine) continue;
+          const ev: any = JSON.parse(dataLine.slice(6));
+
+          if (ev.type === "inspected") {
+            setInspectLog((l) => [...l, ev]);
+            setData((prev) => prev
+              ? { ...prev, data: prev.data.map((r) => r.url === ev.url ? { ...r, category: ev.category, indexed: ev.category?.includes("Indexed") || r.indexed } : r) }
+              : prev
+            );
+          } else {
+            setInspectLog((l) => [...l, ev]);
+          }
+
+          if (ev.type === "done" || ev.type === "error") {
+            setInspecting(false);
+            load();
+          }
+        }
+      }
+    } catch (e: any) {
+      setInspectLog([{ type: "error", message: e.message }]);
+      setInspecting(false);
+    }
+  }
+
   function toggleSelect(url: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -207,7 +267,7 @@ export default function UrlsTable({ site, navigate }: Props) {
   const totalPages = data ? Math.ceil(data.total / pageSize) : 1;
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-3 mb-5">
         <button
@@ -215,7 +275,7 @@ export default function UrlsTable({ site, navigate }: Props) {
           className="text-sm"
           style={{ color: "var(--color-muted)" }}
         >
-          ← Dashboard
+          {t("detail.back")}
         </button>
         <h1 className="text-xl font-semibold">{site}</h1>
       </div>
@@ -225,10 +285,10 @@ export default function UrlsTable({ site, navigate }: Props) {
         {/* Filter */}
         <div className="flex rounded-md overflow-hidden border" style={{ borderColor: "var(--color-rim)" }}>
           {([
-            { value: "all", label: "All" },
-            { value: "pending", label: "Pending" },
-            { value: "indexed", label: "Submitted" },
-            { value: "gsc_indexed", label: "Indexed" },
+            { value: "all", label: t("detail.all") },
+            { value: "pending", label: t("sites.pending") },
+            { value: "indexed", label: t("detail.sent_to_google") },
+            { value: "gsc_indexed", label: t("detail.gsc_indexed") },
           ] as const).map((f) => (
             <button
               key={f.value}
@@ -252,7 +312,7 @@ export default function UrlsTable({ site, navigate }: Props) {
           className="px-3 py-1.5 rounded-md text-sm border disabled:opacity-50"
           style={{ borderColor: "var(--color-rim)", color: "var(--color-muted)" }}
         >
-          {fetching ? "Fetching…" : "Fetch URLs"}
+          {fetching ? "获取中..." : t("detail.fetch")}
         </button>
 
         <button
@@ -261,18 +321,26 @@ export default function UrlsTable({ site, navigate }: Props) {
           className="px-3 py-1.5 rounded-md text-sm border disabled:opacity-50"
           style={{ borderColor: "var(--color-rim)", color: "var(--color-muted)" }}
         >
-          {syncing ? "Syncing…" : "Sync GSC"}
+          {syncing ? "同步中..." : t("detail.sync_gsc")}
         </button>
 
         {selected.size > 0 && (
           <>
+            <button
+              onClick={handleInspect}
+              disabled={inspecting}
+              className="px-3 py-1.5 rounded-md text-sm border disabled:opacity-50"
+              style={{ borderColor: "var(--color-accent)", color: "var(--color-accent)" }}
+            >
+              {inspecting ? t("detail.inspecting") : `${t("detail.inspect")} (${selected.size})`}
+            </button>
             <button
               onClick={handleRunSelected}
               disabled={running}
               className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
               style={{ background: "var(--color-accent)", color: "#fff" }}
             >
-              {running ? "Indexing…" : `Send to index (${selected.size})`}
+              {running ? "推送中..." : `${t("detail.run")} (${selected.size})`}
             </button>
             <button
               onClick={handleMarkIndexed}
@@ -280,7 +348,7 @@ export default function UrlsTable({ site, navigate }: Props) {
               className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
               style={{ background: "var(--color-success)", color: "#fff" }}
             >
-              Mark indexed ({selected.size})
+              {t("detail.mark_sent")} ({selected.size})
             </button>
             <button
               onClick={() => handleReset(false)}
@@ -288,7 +356,7 @@ export default function UrlsTable({ site, navigate }: Props) {
               className="px-3 py-1.5 rounded-md text-sm border disabled:opacity-50"
               style={{ borderColor: "var(--color-warn)", color: "var(--color-warn)" }}
             >
-              Reset ({selected.size})
+              {t("detail.reset_selected")} ({selected.size})
             </button>
           </>
         )}
@@ -298,7 +366,7 @@ export default function UrlsTable({ site, navigate }: Props) {
           className="px-3 py-1.5 rounded-md text-sm border"
           style={{ borderColor: "var(--color-danger)", color: "var(--color-danger)" }}
         >
-          Reset all
+          {t("detail.reset_all")}
         </button>
       </div>
 
@@ -340,7 +408,7 @@ export default function UrlsTable({ site, navigate }: Props) {
         >
           {runProgress && (
             <div className="mb-1.5" style={{ color: "var(--color-muted)" }}>
-              {runProgress.done} / {runProgress.total} URLs
+              {runProgress.done} / {runProgress.total} 网址
             </div>
           )}
           {runLog.map((l, i) => (
@@ -352,19 +420,45 @@ export default function UrlsTable({ site, navigate }: Props) {
                     ? "var(--color-danger)"
                     : l.type === "done"
                     ? "var(--color-success)"
-                    : l.type === "indexed"
-                    ? "var(--color-muted)"
                     : "var(--color-muted)",
               }}
             >
               {l.type === "indexed"
                 ? `✓ ${l.url}`
                 : l.type === "done"
-                ? `Done — ${l.done ?? 0} sent`
+                ? `完成 — 已发送 ${l.done ?? 0} 个`
                 : l.message || l.type}
             </div>
           ))}
-          {running && <div style={{ color: "var(--color-muted)", opacity: 0.5 }}>…</div>}
+          {running && <div style={{ color: "var(--color-muted)", opacity: 0.5 }}>处理中...</div>}
+        </div>
+      )}
+
+      {inspectLog.length > 0 && (
+        <div
+          className="mb-3 p-2 rounded-md text-xs font-mono space-y-0.5 max-h-32 overflow-y-auto"
+          style={{ background: "rgba(0,0,0,0.25)", border: "1px solid var(--color-rim)" }}
+        >
+          {inspectLog.map((l, i) => (
+            <div
+              key={i}
+              style={{
+                color:
+                  l.type === "error"
+                    ? "var(--color-danger)"
+                    : l.type === "done"
+                    ? "var(--color-success)"
+                    : "var(--color-muted)",
+              }}
+            >
+              {l.type === "inspected"
+                ? `✓ [${l.category}] ${l.url}`
+                : l.type === "done"
+                ? `完成 — 已检测 ${l.count ?? 0} 个`
+                : l.message || l.type}
+            </div>
+          ))}
+          {inspecting && <div style={{ color: "var(--color-muted)", opacity: 0.5 }}>检测中...</div>}
         </div>
       )}
 
@@ -384,16 +478,19 @@ export default function UrlsTable({ site, navigate }: Props) {
                 />
               </th>
               <th className="px-4 py-3 text-left font-medium" style={{ color: "var(--color-muted)" }}>
-                URL
+                {t("detail.url")}
               </th>
               <th className="w-24 px-4 py-3 text-left font-medium" style={{ color: "var(--color-muted)" }}>
-                Status
+                {t("detail.status")}
+              </th>
+              <th className="px-4 py-3 text-left font-medium" style={{ color: "var(--color-muted)" }}>
+                {t("detail.category")}
               </th>
               <th className="w-32 px-4 py-3 text-left font-medium" style={{ color: "var(--color-muted)" }}>
-                Indexed at
+                {t("detail.sent_time")}
               </th>
               <th className="w-32 px-4 py-3 text-left font-medium" style={{ color: "var(--color-muted)" }}>
-                Lastmod
+                {t("detail.lastmod")}
               </th>
             </tr>
           </thead>
@@ -444,8 +541,11 @@ export default function UrlsTable({ site, navigate }: Props) {
                         color: row.indexed ? "var(--color-success)" : "var(--color-warn)",
                       }}
                     >
-                      {row.indexed ? "indexed" : "pending"}
+                      {row.indexed ? t("detail.sent") : t("sites.pending")}
                     </span>
+                  </td>
+                  <td className="px-4 py-2 text-xs truncate max-w-[200px]" style={{ color: "var(--color-muted)" }} title={row.category || ""}>
+                    {row.category || "—"}
                   </td>
                   <td className="px-4 py-2 text-xs" style={{ color: "var(--color-muted)" }}>
                     {row.indexed_at || "—"}

@@ -1,18 +1,15 @@
-"""
-SmartInstantIndex — Local Web App
-Starts FastAPI on localhost:7842, opens the browser, and shows a tray icon.
-Clicking "Quit" in the tray menu shuts down the server and exits.
-"""
+import signal
 import sys
 import os
 import threading
 import webbrowser
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
+from siteindexer.constants import DEFAULT_SERVER_PORT, BROWSER_OPEN_DELAY
+
 if getattr(sys, "frozen", False):
     DATA_DIR = os.path.dirname(sys.executable)
-    STATIC_DIR = os.path.join(sys._MEIPASS, "static")          # type: ignore
-    ICON_PATH = os.path.join(sys._MEIPASS, "android-chrome-192x192.png")  # type: ignore
+    STATIC_DIR = os.path.join(sys._MEIPASS, "static")
+    ICON_PATH = os.path.join(sys._MEIPASS, "android-chrome-192x192.png")
 else:
     DATA_DIR = os.path.dirname(os.path.abspath(__file__))
     STATIC_DIR = os.path.join(DATA_DIR, "web_local", "frontend", "dist")
@@ -22,7 +19,9 @@ os.chdir(DATA_DIR)
 os.environ["SMARTINDEX_DATA_DIR"] = DATA_DIR
 os.environ["SMARTINDEX_STATIC_DIR"] = STATIC_DIR
 
-PORT = 7842
+PORT = DEFAULT_SERVER_PORT
+
+_server_instance = None
 
 
 def open_browser():
@@ -30,18 +29,21 @@ def open_browser():
 
 
 def run_server():
+    global _server_instance
     try:
         import uvicorn
         from web_local.backend.routes import app
-        uvicorn.run(
+        config = uvicorn.Config(
             app,
             host="127.0.0.1",
             port=PORT,
             log_config=None,
         )
+        _server_instance = uvicorn.Server(config)
+        _server_instance.run()
     except Exception as e:
         import traceback
-        log_path = os.path.join(DATA_DIR, "smartindex_error.log")
+        log_path = os.path.join(DATA_DIR, "siteindexer_error.log")
         with open(log_path, "w") as f:
             f.write(traceback.format_exc())
         raise
@@ -58,7 +60,9 @@ def build_tray_icon():
 
     def on_quit(icon, _item):
         icon.stop()
-        os._exit(0)
+        if _server_instance is not None:
+            _server_instance.should_exit = True
+        threading.Timer(1.0, lambda: sys.exit(0)).start()
 
     menu = pystray.Menu(
         pystray.MenuItem("Open SiteIndexer", on_open, default=True),
@@ -68,13 +72,10 @@ def build_tray_icon():
 
 
 if __name__ == "__main__":
-    # Start uvicorn in a background daemon thread
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
-    # Open browser after a short delay
-    threading.Timer(1.2, open_browser).start()
+    threading.Timer(BROWSER_OPEN_DELAY, open_browser).start()
 
-    # Run tray icon on the main thread (required on macOS and Windows)
     icon = build_tray_icon()
     icon.run()

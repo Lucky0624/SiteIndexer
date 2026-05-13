@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -18,14 +19,14 @@ def data_path(filename):
 # Ensure relative paths (logging.conf, etc.) resolve to DATA_DIR
 os.chdir(DATA_DIR)
 
-from smartinstantindex.utils import (
+from siteindexer.utils import (
     load_json, save_urls_to_file, normalize_config,
-    migrate_urls, filter_urls, update_quota_batch, DEFAULT_SKIP_EXTENSIONS,
+    migrate_urls, filter_urls, sync_urls, update_quota_batch, DEFAULT_SKIP_EXTENSIONS,
     build_indexing_plan,
 )
-from smartinstantindex.sitemaps import fetch_urls_from_sitemap_recursive
-from smartinstantindex.indexing import index_url
-from smartinstantindex.searchconsole import fetch_indexed_pages
+from siteindexer.sitemaps import fetch_urls_from_sitemap_recursive
+from siteindexer.indexing import index_url
+from siteindexer.searchconsole import fetch_indexed_pages, inspect_url
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -47,7 +48,8 @@ def invalidate_config_cache():
     _config_cache = None
 
 def save_config(config):
-    save_urls_to_file(config, CONFIG_FILE)
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=4)
     invalidate_config_cache()
 
 
@@ -56,9 +58,16 @@ def save_config(config):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("SmartInstantIndex")
+        self.title("智能快速收录 - SmartIndexer")
         self.geometry("1100x700")
         self.minsize(900, 600)
+        
+        # 设置图标
+        if os.path.exists(data_path("icon.ico")):
+            try:
+                self.iconbitmap(data_path("icon.ico"))
+            except Exception:
+                pass
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -98,11 +107,11 @@ class App(ctk.CTk):
 
 class Sidebar(ctk.CTkFrame):
     BUTTONS = [
-        ("dashboard", "Dashboard"),
-        ("urls", "URLs"),
-        ("sites", "Sites"),
-        ("settings", "Settings"),
-        ("help", "Help"),
+        ("dashboard", "仪表盘"),
+        ("urls", "链接列表"),
+        ("sites", "站点设置"),
+        ("settings", "系统设置"),
+        ("help", "使用帮助"),
     ]
 
     def __init__(self, parent, on_navigate):
@@ -110,7 +119,7 @@ class Sidebar(ctk.CTkFrame):
         self.on_navigate = on_navigate
         self.grid_rowconfigure(len(self.BUTTONS) + 1, weight=1)
 
-        ctk.CTkLabel(self, text="SmartInstantIndex", font=ctk.CTkFont(size=18, weight="bold")).grid(
+        ctk.CTkLabel(self, text="智能快速收录", font=ctk.CTkFont(size=18, weight="bold")).grid(
             row=0, column=0, padx=20, pady=(20, 30)
         )
 
@@ -130,14 +139,14 @@ class DashboardScreen(ctk.CTkFrame):
         self._running = False
         self.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(self, text="Dashboard", font=ctk.CTkFont(size=20, weight="bold")).grid(
+        ctk.CTkLabel(self, text="仪表盘", font=ctk.CTkFont(size=20, weight="bold")).grid(
             row=0, column=0, padx=30, pady=(20, 10), sticky="w"
         )
 
         # Site selector
         sel_frame = ctk.CTkFrame(self)
         sel_frame.grid(row=1, column=0, padx=30, pady=5, sticky="w")
-        ctk.CTkLabel(sel_frame, text="Site:").pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(sel_frame, text="站点:").pack(side="left", padx=(0, 8))
         self.site_var = ctk.StringVar()
         self.site_dropdown = ctk.CTkOptionMenu(sel_frame, variable=self.site_var, width=250,
                                                command=lambda _: self._refresh_stats())
@@ -148,7 +157,7 @@ class DashboardScreen(ctk.CTkFrame):
         stats_frame.grid(row=2, column=0, padx=30, pady=10, sticky="ew")
         stats_frame.grid_columnconfigure((0, 1, 2), weight=1)
         self.stat_labels = {}
-        for col, key in enumerate(["Total URLs", "Indexed", "Pending"]):
+        for col, key in enumerate(["总链接数", "已收录", "待处理"]):
             f = ctk.CTkFrame(stats_frame)
             f.grid(row=0, column=col, padx=10, pady=10, sticky="ew")
             ctk.CTkLabel(f, text=key, font=ctk.CTkFont(size=12)).pack(pady=(8, 0))
@@ -160,7 +169,7 @@ class DashboardScreen(ctk.CTkFrame):
         quota_section = ctk.CTkFrame(self)
         quota_section.grid(row=3, column=0, padx=30, pady=(0, 5), sticky="ew")
         quota_section.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(quota_section, text="Daily Quota",
+        ctk.CTkLabel(quota_section, text="每日额度 (API Quota)",
                      font=ctk.CTkFont(size=13, weight="bold")).grid(
             row=0, column=0, padx=10, pady=(8, 4), sticky="w")
         self.quota_bars_frame = ctk.CTkFrame(quota_section, fg_color="transparent")
@@ -170,14 +179,14 @@ class DashboardScreen(ctk.CTkFrame):
         # Run button + progress
         action_frame = ctk.CTkFrame(self)
         action_frame.grid(row=4, column=0, padx=30, pady=5, sticky="ew")
-        self.run_btn = ctk.CTkButton(action_frame, text="Run Indexing", command=self._run)
+        self.run_btn = ctk.CTkButton(action_frame, text="开始执行推送", command=self._run)
         self.run_btn.pack(side="left", padx=10, pady=10)
         self.progress = ctk.CTkProgressBar(action_frame)
         self.progress.pack(side="left", fill="x", expand=True, padx=10, pady=10)
         self.progress.set(0)
 
         # Log area
-        ctk.CTkLabel(self, text="Log", font=ctk.CTkFont(size=13, weight="bold")).grid(
+        ctk.CTkLabel(self, text="实时日志", font=ctk.CTkFont(size=13, weight="bold")).grid(
             row=5, column=0, padx=30, pady=(10, 0), sticky="w"
         )
         self.grid_rowconfigure(6, weight=1)
@@ -216,9 +225,9 @@ class DashboardScreen(ctk.CTkFrame):
         indexed = sum(1 for e in urls.values() if e["indexed"])
         pending = total - indexed
 
-        self.stat_labels["Total URLs"].configure(text=str(total))
-        self.stat_labels["Indexed"].configure(text=str(indexed))
-        self.stat_labels["Pending"].configure(text=str(pending))
+        self.stat_labels["总链接数"].configure(text=str(total))
+        self.stat_labels["已收录"].configure(text=str(indexed))
+        self.stat_labels["待处理"].configure(text=str(pending))
         self._rebuild_quota_bars(site["credentials"])
 
     def _rebuild_quota_bars(self, credentials_list):
@@ -276,40 +285,23 @@ class DashboardScreen(ctk.CTkFrame):
 
             self._log(f"Fetching sitemap: {site['sitemap_url']}")
             try:
-                sitemap_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site.get("proxy"))
+                raw_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site.get("proxy"))
             except Exception as e:
                 self._log(f"ERROR fetching sitemap: {e}")
                 return
 
-            sitemap_urls = filter_urls(sitemap_urls, site)
+            sitemap_urls = filter_urls(raw_urls, site)
             self._log(f"URLs after filtering: {len(sitemap_urls)}")
 
             existing_urls = migrate_urls(load_json(data_path(site["urls_file"])))
 
-            new_count = 0
-            for url in sitemap_urls:
-                if url not in existing_urls:
-                    existing_urls[url] = {"indexed": False, "lastmod": sitemap_urls[url]}
-                    new_count += 1
-
-            del_count = 0
-            for url in list(existing_urls):
-                if url not in sitemap_urls:
-                    del existing_urls[url]
-                    del_count += 1
-
-            if site["track_lastmod"]:
-                for url, entry in existing_urls.items():
-                    new_lastmod = sitemap_urls.get(url)
-                    if new_lastmod and new_lastmod != entry.get("lastmod"):
-                        self._log(f"lastmod changed: {url}")
-                        entry["indexed"] = False
-                        entry["lastmod"] = new_lastmod
-
-            if new_count:
-                self._log(f"New URLs: {new_count}")
-            if del_count:
-                self._log(f"Removed URLs: {del_count}")
+            sync_result = sync_urls(existing_urls, sitemap_urls, raw_urls, site)
+            if sync_result["new_count"]:
+                self._log(f"New URLs: {sync_result['new_count']}")
+            if sync_result["del_count"]:
+                self._log(f"Removed URLs: {sync_result['del_count']}")
+            if sync_result["reset_count"]:
+                self._log(f"Lastmod reset: {sync_result['reset_count']}")
 
             # Save state after diff (before indexing loop)
             save_urls_to_file(existing_urls, data_path(site["urls_file"]))
@@ -382,7 +374,7 @@ class URLsScreen(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
-        ctk.CTkLabel(self, text="URLs", font=ctk.CTkFont(size=20, weight="bold")).grid(
+        ctk.CTkLabel(self, text="链接列表", font=ctk.CTkFont(size=20, weight="bold")).grid(
             row=0, column=0, padx=30, pady=(20, 10), sticky="w"
         )
 
@@ -391,7 +383,7 @@ class URLsScreen(ctk.CTkFrame):
         top.grid(row=1, column=0, padx=30, pady=5, sticky="ew")
         top.grid_columnconfigure(2, weight=1)
 
-        ctk.CTkLabel(top, text="Site:").grid(row=0, column=0, padx=(10, 8))
+        ctk.CTkLabel(top, text="站点:").grid(row=0, column=0, padx=(10, 8))
         self.site_var = ctk.StringVar()
         self.site_dropdown = ctk.CTkOptionMenu(top, variable=self.site_var, width=200,
                                                command=lambda _: self._load_urls())
@@ -399,7 +391,7 @@ class URLsScreen(ctk.CTkFrame):
 
         self.search_var = ctk.StringVar()
         self.search_var.trace_add("write", lambda *_: self._debounce_filter())
-        ctk.CTkEntry(top, textvariable=self.search_var, placeholder_text="Search URLs…").grid(
+        ctk.CTkEntry(top, textvariable=self.search_var, placeholder_text="搜索链接…").grid(
             row=0, column=2, padx=(0, 10), sticky="ew"
         )
 
@@ -407,13 +399,15 @@ class URLsScreen(ctk.CTkFrame):
         btn_row = ctk.CTkFrame(top, fg_color="transparent")
         btn_row.grid(row=1, column=0, columnspan=3, padx=(10, 0), pady=(4, 0), sticky="w")
 
-        self._fetch_btn = ctk.CTkButton(btn_row, text="Fetch URLs", width=100, command=self._fetch_urls)
+        self._fetch_btn = ctk.CTkButton(btn_row, text="从网站地图获取", width=120, command=self._fetch_urls)
         self._fetch_btn.pack(side="left", padx=(0, 6))
-        ctk.CTkButton(btn_row, text="Mark indexed", width=110, command=self._mark_selected_indexed).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(btn_row, text="Reset selected", width=110, command=self._reset_selected).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(btn_row, text="Reset all", width=90, command=self._reset_all).pack(side="left", padx=(0, 6))
-        self._gsc_btn = ctk.CTkButton(btn_row, text="Sync from GSC", width=120, command=self._check_gsc)
+        ctk.CTkButton(btn_row, text="标记为已收录", width=110, command=self._mark_selected_indexed).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(btn_row, text="重置选中项", width=110, command=self._reset_selected).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(btn_row, text="重置全部", width=90, command=self._reset_all).pack(side="left", padx=(0, 6))
+        self._gsc_btn = ctk.CTkButton(btn_row, text="从GSC同步", width=120, command=self._check_gsc)
         self._gsc_btn.pack_forget()  # oculto hasta que el site tenga site_url configurado
+        self._inspect_btn = ctk.CTkButton(btn_row, text="检测选中链接", width=120, command=self._inspect_selected_urls)
+        self._inspect_btn.pack(side="left", padx=(0, 6))
 
         self._fetch_status = ctk.StringVar()
         ctk.CTkLabel(top, textvariable=self._fetch_status, font=ctk.CTkFont(size=11), text_color="#aaaaaa").grid(
@@ -437,20 +431,22 @@ class URLsScreen(ctk.CTkFrame):
 
         self.tree = ttk.Treeview(
             tree_frame,
-            columns=("url", "status", "lastmod", "submitted", "gsc"),
+            columns=("url", "status", "category", "lastmod", "submitted", "gsc"),
             show="headings",
             selectmode="extended",
         )
-        self.tree.heading("url", text="URL")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("lastmod", text="lastmod")
-        self.tree.heading("submitted", text="Submitted")
-        self.tree.heading("gsc", text="GSC Sync")
-        self.tree.column("url", width=500, minwidth=200, stretch=False)
-        self.tree.column("status", width=80, anchor="center", stretch=False)
-        self.tree.column("lastmod", width=130, anchor="center", stretch=False)
-        self.tree.column("submitted", width=130, anchor="center", stretch=False)
-        self.tree.column("gsc", width=120, anchor="center", stretch=False)
+        self.tree.heading("url", text="链接 (URL)")
+        self.tree.heading("status", text="状态")
+        self.tree.heading("category", text="分类")
+        self.tree.heading("lastmod", text="最后修改")
+        self.tree.heading("submitted", text="提交日期")
+        self.tree.heading("gsc", text="GSC同步")
+        self.tree.column("url", width=400, minwidth=200, stretch=False)
+        self.tree.column("status", width=60, anchor="center", stretch=False)
+        self.tree.column("category", width=250, anchor="w", stretch=False)
+        self.tree.column("lastmod", width=110, anchor="center", stretch=False)
+        self.tree.column("submitted", width=110, anchor="center", stretch=False)
+        self.tree.column("gsc", width=100, anchor="center", stretch=False)
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
@@ -505,9 +501,10 @@ class URLsScreen(ctk.CTkFrame):
                 continue
             status = "✓" if entry["indexed"] else "✗"
             tag = "indexed" if entry["indexed"] else "pending"
+            category = entry.get("category") or "—"
             gsc_synced = "✓" if entry.get("sc_synced_at") else "—"
             self.tree.insert("", "end", iid=url, values=(
-                url, status,
+                url, status, category,
                 entry.get("lastmod") or "—",
                 entry.get("indexed_at") or "—",
                 gsc_synced,
@@ -522,31 +519,14 @@ class URLsScreen(ctk.CTkFrame):
 
         def worker():
             try:
-                sitemap_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site.get("proxy"))
-                sitemap_urls = filter_urls(sitemap_urls, site)
+                raw_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site.get("proxy"))
+                sitemap_urls = filter_urls(raw_urls, site)
                 existing = migrate_urls(load_json(data_path(site["urls_file"])))
 
-                new_count = 0
-                for url in sitemap_urls:
-                    if url not in existing:
-                        new_count += 1
-                        existing[url] = {"indexed": False, "lastmod": sitemap_urls[url]}
-
-                del_count = 0
-                for url in list(existing):
-                    if url not in sitemap_urls:
-                        del_count += 1
-                        del existing[url]
-
-                if site.get("track_lastmod"):
-                    for url, entry in existing.items():
-                        new_lastmod = sitemap_urls.get(url)
-                        if new_lastmod and new_lastmod != entry.get("lastmod"):
-                            entry["indexed"] = False
-                            entry["lastmod"] = new_lastmod
+                result = sync_urls(existing, sitemap_urls, raw_urls, site)
 
                 save_urls_to_file(existing, data_path(site["urls_file"]))
-                msg = f"Done: {len(existing)} URLs ({new_count} new, {del_count} removed)"
+                msg = f"Done: {len(existing)} URLs ({result['new_count']} new, {result['del_count']} removed)"
                 self.after(0, lambda: self._finish_fetch(existing, msg))
             except Exception as e:
                 self.after(0, lambda: self._finish_fetch(None, f"Error: {e}"))
@@ -610,8 +590,8 @@ class URLsScreen(ctk.CTkFrame):
         if not site or not site.get("site_url"):
             return
         self._gsc_running = True
-        self._gsc_btn.configure(state="disabled", text="Syncing…")
-        self._fetch_status.set("Connecting to Google Search Console…")
+        self._gsc_btn.configure(state="disabled", text="同步中…")
+        self._fetch_status.set("正在连接 Google Search Console…")
         threading.Thread(target=self._run_gsc_sync, args=(site,), daemon=True).start()
 
     def _run_gsc_sync(self, site):
@@ -629,16 +609,83 @@ class URLsScreen(ctk.CTkFrame):
                         entry["indexed_at"] = today
                         marked += 1
             save_urls_to_file(self._all_urls, data_path(site["urls_file"]))
-            msg = f"GSC sync done: {len(gsc_pages)} pages found in GSC, {marked} newly marked as indexed."
+            msg = f"GSC同步完成: 在GSC中找到 {len(gsc_pages)} 个页面，其中 {marked} 个已更新为收录状态。"
             self.after(0, lambda m=msg: self._fetch_status.set(m))
             self.after(0, self._filter_table)
         except Exception as e:
             err = str(e)
-            self.after(0, lambda m=err: self._fetch_status.set("GSC error — see details"))
+            self.after(0, lambda m=err: self._fetch_status.set("GSC 同步出错"))
             self.after(0, lambda m=err: messagebox.showerror("GSC Sync Error", m))
         finally:
             self._gsc_running = False
-            self.after(0, lambda: self._gsc_btn.configure(state="normal", text="Sync from GSC"))
+            self.after(0, lambda: self._gsc_btn.configure(state="normal", text="从GSC同步"))
+
+    def _inspect_selected_urls(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showinfo("No selection", "Please select one or more URLs to inspect.")
+            return
+        site = self._get_site()
+        if not site or not site.get("site_url"):
+            messagebox.showwarning("Missing GSC Property", "This site has no 'GSC Property URL' configured.")
+            return
+
+        self._inspect_btn.configure(state="disabled", text="Inspecting…")
+        self._fetch_status.set(f"Inspecting {len(selected)} URLs…")
+        threading.Thread(target=self._run_inspect_selected, args=(site, selected), daemon=True).start()
+
+    def _run_inspect_selected(self, site, urls):
+        creds_path = data_path(site["credentials"][0])
+        site_url = site["site_url"]
+        today = str(date.today())
+        count = 0
+        try:
+            for url in urls:
+                if url not in self._all_urls:
+                    continue
+                res = inspect_url(url, site_url, creds_path, proxy=site.get("proxy"))
+
+                self._all_urls[url]["category"] = res.get("coverageState", "Unknown")
+                self._all_urls[url]["category_updated_at"] = today
+                self._all_urls[url]["verdict"] = res.get("verdict")
+                self._all_urls[url]["status_category"] = res.get("status_category", "unknown")
+                self._all_urls[url]["last_crawl_time"] = res.get("lastCrawlTime")
+                self._all_urls[url]["page_fetch_state"] = res.get("pageFetchState")
+                self._all_urls[url]["robots_txt_state"] = res.get("robotsTxtState")
+                self._all_urls[url]["inspected_at"] = today
+
+                if res.get("is_indexed"):
+                    self._all_urls[url]["indexed"] = True
+                    if not self._all_urls[url].get("indexed_at"):
+                        self._all_urls[url]["indexed_at"] = today
+
+                count += 1
+                category = res.get("coverageState", "Unknown")
+                self.after(0, lambda u=url, c=category: self._update_tree_row(u, c))
+
+            save_urls_to_file(self._all_urls, data_path(site["urls_file"]))
+            msg = f"Inspection done: {count} URLs updated."
+            self.after(0, lambda m=msg: self._fetch_status.set(m))
+        except Exception as e:
+            self.after(0, lambda m=str(e): self._fetch_status.set(f"Inspection error: {m}"))
+            self.after(0, lambda m=str(e): messagebox.showerror("Inspection Error", m))
+        finally:
+            self.after(0, lambda: self._inspect_btn.configure(state="normal", text="Inspect selected"))
+
+    def _update_tree_row(self, url, category):
+        # Efficiently update just one row in the treeview if it's still visible
+        if self.tree.exists(url):
+            entry = self._all_urls.get(url)
+            if not entry: return
+            status = "✓" if entry["indexed"] else "✗"
+            tag = "indexed" if entry["indexed"] else "pending"
+            gsc_synced = "✓" if entry.get("sc_synced_at") else "—"
+            self.tree.item(url, values=(
+                url, status, category,
+                entry.get("lastmod") or "—",
+                entry.get("indexed_at") or "—",
+                gsc_synced,
+            ), tags=(tag,))
 
 
 # ─── Sites Screen ────────────────────────────────────────────────────────────
@@ -652,7 +699,7 @@ class SitesScreen(ctk.CTkFrame):
         self._editing_index = None
         self._dirty = True  # render on first show
 
-        ctk.CTkLabel(self, text="Sites", font=ctk.CTkFont(size=20, weight="bold")).grid(
+        ctk.CTkLabel(self, text="站点设置", font=ctk.CTkFont(size=20, weight="bold")).grid(
             row=0, column=0, padx=30, pady=(20, 10), sticky="w"
         )
 
@@ -665,12 +712,12 @@ class SitesScreen(ctk.CTkFrame):
         form.grid(row=2, column=0, padx=30, pady=10, sticky="ew")
         form.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(form, text="Add / Edit Site", font=ctk.CTkFont(weight="bold")).grid(
+        ctk.CTkLabel(form, text="添加 / 编辑站点", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=3, padx=10, pady=(10, 6), sticky="w"
         )
 
-        fields = [("Name", "name"), ("Sitemap URL", "sitemap_url"), ("URLs file", "urls_file"),
-                  ("GSC Property URL", "site_url")]
+        fields = [("站点名称", "name"), ("Sitemap 链接", "sitemap_url"), ("链接数据文件", "urls_file"),
+                  ("GSC 资源 URL", "site_url")]
         self.form_vars = {}
         for i, (label, key) in enumerate(fields, 1):
             ctk.CTkLabel(form, text=label).grid(row=i, column=0, padx=10, pady=4, sticky="e")
@@ -678,26 +725,26 @@ class SitesScreen(ctk.CTkFrame):
             self.form_vars[key] = var
             ctk.CTkEntry(form, textvariable=var).grid(row=i, column=1, padx=10, pady=4, sticky="ew")
 
-        ctk.CTkLabel(form, text="Use sc-domain:example.com (recommended)",
+        ctk.CTkLabel(form, text="建议使用 sc-domain:example.com 格式",
                      text_color="gray", font=ctk.CTkFont(size=10)).grid(
             row=4, column=2, padx=(0, 10), sticky="w"
         )
 
-        ctk.CTkLabel(form, text="Credentials").grid(row=5, column=0, padx=10, pady=4, sticky="ne")
+        ctk.CTkLabel(form, text="API 凭据").grid(row=5, column=0, padx=10, pady=4, sticky="ne")
         creds_container = ctk.CTkFrame(form, fg_color="transparent")
         creds_container.grid(row=5, column=1, columnspan=2, padx=10, pady=4, sticky="ew")
         creds_container.grid_columnconfigure(0, weight=1)
         self._creds_list_frame = ctk.CTkScrollableFrame(creds_container, height=80)
         self._creds_list_frame.grid(row=0, column=0, sticky="ew")
         self._creds_list_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkButton(creds_container, text="+ Add credentials", width=140,
+        ctk.CTkButton(creds_container, text="+ 添加凭据文件", width=140,
                       command=self._add_credentials).grid(row=1, column=0, pady=(4, 0), sticky="w")
         self._creds_list = []
 
         btn_frame = ctk.CTkFrame(form)
         btn_frame.grid(row=6, column=0, columnspan=3, pady=10)
-        ctk.CTkButton(btn_frame, text="Save", command=self._save_site).pack(side="left", padx=6)
-        ctk.CTkButton(btn_frame, text="Clear", command=self._clear_form).pack(side="left", padx=6)
+        ctk.CTkButton(btn_frame, text="保存", command=self._save_site).pack(side="left", padx=6)
+        ctk.CTkButton(btn_frame, text="重置表单", command=self._clear_form).pack(side="left", padx=6)
 
     def on_show(self):
         if self._dirty:
@@ -716,9 +763,9 @@ class SitesScreen(ctk.CTkFrame):
             ctk.CTkLabel(row,
                          text=f"{site['name']}  —  {site['sitemap_url']}  —  {capacity} urls/día",
                          anchor="w").grid(row=0, column=0, padx=10, sticky="w")
-            ctk.CTkButton(row, text="Edit", width=60,
+            ctk.CTkButton(row, text="编辑", width=60,
                           command=lambda idx=i: self._edit_site(idx)).grid(row=0, column=1, padx=4)
-            ctk.CTkButton(row, text="Delete", width=60, fg_color="red", hover_color="#a00000",
+            ctk.CTkButton(row, text="删除", width=60, fg_color="red", hover_color="#a00000",
                           command=lambda idx=i: self._delete_site(idx)).grid(row=0, column=2, padx=4)
 
     def _render_creds_list(self):
@@ -730,7 +777,7 @@ class SitesScreen(ctk.CTkFrame):
             row.grid_columnconfigure(0, weight=1)
             ctk.CTkLabel(row, text=creds_file, anchor="w").grid(
                 row=0, column=0, padx=(4, 8), sticky="w")
-            ctk.CTkButton(row, text="Remove", width=70,
+            ctk.CTkButton(row, text="移除", width=70,
                           fg_color="gray30", hover_color="gray20",
                           command=lambda i=idx: self._remove_credentials(i)).grid(
                 row=0, column=1, padx=(0, 4))
@@ -823,13 +870,13 @@ class SettingsScreen(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
-        ctk.CTkLabel(self, text="Settings", font=ctk.CTkFont(size=20, weight="bold")).grid(
+        ctk.CTkLabel(self, text="系统设置", font=ctk.CTkFont(size=20, weight="bold")).grid(
             row=0, column=0, padx=30, pady=(20, 10), sticky="w"
         )
 
         sel = ctk.CTkFrame(self)
         sel.grid(row=1, column=0, padx=30, pady=5, sticky="w")
-        ctk.CTkLabel(sel, text="Site:").pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(sel, text="站点:").pack(side="left", padx=(0, 8))
         self.site_var = ctk.StringVar()
         self.site_dropdown = ctk.CTkOptionMenu(sel, variable=self.site_var, width=220,
                                                command=lambda _: self._load_settings())
@@ -839,27 +886,27 @@ class SettingsScreen(ctk.CTkFrame):
         form.grid(row=2, column=0, padx=30, pady=10, sticky="nsew")
         form.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(form, text="Track lastmod").grid(row=0, column=0, padx=10, pady=8, sticky="w")
+        ctk.CTkLabel(form, text="追踪最后修改时间 (Track lastmod)").grid(row=0, column=0, padx=10, pady=8, sticky="w")
         self.track_lastmod_var = ctk.BooleanVar()
         ctk.CTkSwitch(form, text="", variable=self.track_lastmod_var).grid(row=0, column=1, sticky="w")
 
         self.list_vars = {}
         for i, (label, key) in enumerate([
-            ("Skip extensions", "skip_extensions"),
-            ("Exclude patterns", "exclude_patterns"),
-            ("Include patterns", "include_patterns"),
+            ("跳过的扩展名 (Skip extensions)", "skip_extensions"),
+            ("排除模式 (Exclude patterns)", "exclude_patterns"),
+            ("包含模式 (Include patterns)", "include_patterns"),
         ], 1):
             ctk.CTkLabel(form, text=label, font=ctk.CTkFont(weight="bold")).grid(
                 row=i * 2 - 1, column=0, columnspan=2, padx=10, pady=(12, 2), sticky="w"
             )
-            ctk.CTkLabel(form, text="(one per line)", text_color="gray").grid(
+            ctk.CTkLabel(form, text="(每行一个)", text_color="gray").grid(
                 row=i * 2 - 1, column=1, padx=10, sticky="e"
             )
             tb = ctk.CTkTextbox(form, height=80)
             tb.grid(row=i * 2, column=0, columnspan=2, padx=10, pady=(0, 4), sticky="ew")
             self.list_vars[key] = tb
 
-        ctk.CTkButton(self, text="Save settings", command=self._save_settings).grid(
+        ctk.CTkButton(self, text="保存设置", command=self._save_settings).grid(
             row=3, column=0, padx=30, pady=10, sticky="w"
         )
 
@@ -893,24 +940,23 @@ class SettingsScreen(ctk.CTkFrame):
             raw = tb.get("1.0", "end").strip()
             site[key] = [line.strip() for line in raw.splitlines() if line.strip()]
         save_config(config)
-        messagebox.showinfo("Saved", "Settings saved.")
+        messagebox.showinfo("已保存", "设置已成功保存。")
 
 
 # ─── Help content ────────────────────────────────────────────────────────────
 
 HELP_CONTENT = {
-    "English": [
+    "Chinese": [
         (
-            "① How to Add a Site",
+            "① 如何添加站点",
             """\
-1. Click "Sites" in the sidebar.
+1. 在侧边栏点击“站点设置”。
 
-2. Fill in the form:
-   • Name — A short identifier for your site (e.g. "mysite"). No spaces.
-   • Sitemap URL — The full URL to your sitemap, e.g.:
+2. 填写表单：
+   • 站点名称 — 站点的简短标识（如 "mysite"），不要有空格。
+   • Sitemap 链接 — 网站地图的完整 URL，例如：
        https://example.com/sitemap.xml
        https://example.com/sitemap-index.xml
-   • Credentials — Path to your Google service account JSON file.
      Click "Browse" to locate it (see section ② for how to get it).
    • URLs file — Leave blank. It will be created automatically as
      urls_{name}.json next to the app.
@@ -1872,7 +1918,7 @@ der das heute verbrauchte Kontingent anzeigt.""",
 # ─── Help Screen ─────────────────────────────────────────────────────────────
 
 class HelpScreen(ctk.CTkFrame):
-    LANGUAGES = ["English", "Español", "Français", "Português", "Deutsch"]
+    LANGUAGES = ["Chinese"]
 
     def __init__(self, parent, app):
         super().__init__(parent, corner_radius=0)
@@ -1880,20 +1926,12 @@ class HelpScreen(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
-        ctk.CTkLabel(self, text="Help", font=ctk.CTkFont(size=20, weight="bold")).grid(
+        ctk.CTkLabel(self, text="使用帮助", font=ctk.CTkFont(size=20, weight="bold")).grid(
             row=0, column=0, padx=30, pady=(20, 10), sticky="w"
         )
 
-        # Language selector
-        lang_frame = ctk.CTkFrame(self)
-        lang_frame.grid(row=1, column=0, padx=30, pady=5, sticky="w")
-        ctk.CTkLabel(lang_frame, text="Language:").pack(side="left", padx=(0, 8))
-        self.lang_var = ctk.StringVar(value="English")
-        ctk.CTkOptionMenu(
-            lang_frame, variable=self.lang_var, width=160,
-            values=self.LANGUAGES,
-            command=lambda _: self._render(),
-        ).pack(side="left")
+        # Language selector (hidden as we only support Chinese now)
+        self.lang_var = ctk.StringVar(value="Chinese")
 
         # Single text area — one scrollbar, no nested scrollbars
         self.textbox = ctk.CTkTextbox(self, wrap="word")
@@ -1910,7 +1948,7 @@ class HelpScreen(ctk.CTkFrame):
         self.textbox.delete("1.0", "end")
 
         lang = self.lang_var.get()
-        sections = HELP_CONTENT.get(lang, HELP_CONTENT["English"])
+        sections = HELP_CONTENT.get(lang, HELP_CONTENT["Chinese"])
 
         for i, (title, text) in enumerate(sections):
             if i > 0:

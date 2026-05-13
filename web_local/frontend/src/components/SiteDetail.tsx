@@ -12,6 +12,22 @@ interface Props {
 
 type InlineLog = { text: string; kind: "info" | "ok" | "error" | "url" };
 
+type SortKey = "url" | "category" | "status" | "priority" | "indexed_at" | "lastmod" | "gsc_status" | "coverage_state";
+type SortDir = "asc" | "desc";
+
+const COVERAGE_STATE_MAP: Record<string, string> = {
+  "Submitted and indexed": "已提交且已收录",
+  "Crawled - currently not indexed": "已抓取 - 尚未编入索引",
+  "Discovered - currently not indexed": "已发现 - 当前未编入索引",
+  "URL is not indexed": "未编入索引",
+  "Submitted URL seems to be a Soft 404": "疑似 Soft 404",
+  "Blocked by robots.txt": "被 robots.txt 阻止",
+  "Blocked due to unauthorized request (403)": "被 403 阻止",
+  "Not found (404)": "404 未找到",
+  "Server error (5XX)": "服务器错误 (5XX)",
+  "Indexed": "已收录",
+};
+
 export default function SiteDetail({ site: siteName, navigate }: Props) {
   const { t } = useI18n();
   const [site, setSite] = useState<any>(null);
@@ -28,6 +44,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [urlAction, setUrlAction] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>("url");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
 
   const [panel, setPanel] = useState<{
     visible: boolean;
@@ -68,7 +86,6 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     loadUrls(urlFilter, urlPage, debouncedSearch, urlCategory);
   }, [urlFilter, urlPage, debouncedSearch, urlCategory]);
 
-  // Debounce search input by 300ms
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(urlSearch);
@@ -81,6 +98,36 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [panel.log]);
+
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => d === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
+
+  function sortedUrls(list: any[]): any[] {
+    const sorted = [...list].sort((a, b) => {
+      let va: string | number | boolean = "";
+      let vb: string | number | boolean = "";
+      switch (sortKey) {
+        case "url": va = a.url; vb = b.url; break;
+        case "category": va = a.category || ""; vb = b.category || ""; break;
+        case "status": va = a.indexed ? 1 : 0; vb = b.indexed ? 1 : 0; break;
+        case "priority": { const po: Record<string, number> = { high: 3, normal: 2, low: 1 }; va = po[a.priority] || 2; vb = po[b.priority] || 2; break; }
+        case "indexed_at": va = a.indexed_at || ""; vb = b.indexed_at || ""; break;
+        case "lastmod": va = a.lastmod || ""; vb = b.lastmod || ""; break;
+        case "gsc_status": va = a.sc_synced_at ? 1 : 0; vb = b.sc_synced_at ? 1 : 0; break;
+        case "coverage_state": va = a.coverage_state || ""; vb = b.coverage_state || ""; break;
+      }
+      if (va < vb) return sortDir === "asc" ? -1 : 1;
+      if (va > vb) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }
 
   // --- Run indexing ---
   function handleRun() {
@@ -210,6 +257,149 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     };
   }
 
+  function formatInspectionError(msg: string): string {
+    if (msg.includes("403") && (msg.includes("not own") || msg.includes("not part"))) {
+      return `⚠ 403 权限错误：服务账户无权检测此 URL。\n\n` +
+        `可能原因及解决方法：\n` +
+        `1. site_url 配置与 GSC 属性不匹配 — 请在站点设置中检查「GSC 属性」字段\n` +
+        `   • 域名属性格式：sc-domain:example.com\n` +
+        `   • URL 前缀属性格式：https://example.com/\n` +
+        `2. 服务账户未被添加为 GSC 属性的所有者 — 请在 Google Search Console 中添加服务账户邮箱为所有者\n` +
+        `3. URL 不属于配置的 GSC 属性范围 — 请确保所有 URL 都在 site_url 指定的属性下`;
+    }
+    return msg;
+  }
+
+  // --- Inspect Selected ---
+  async function handleInspect() {
+    if (selected.size === 0) return;
+    const urlsList = Array.from(selected);
+    setPanel({ visible: true, running: true, title: t("detail.inspect"), log: [], progress: null });
+
+    try {
+      const response = await api.inspectStream(siteName, urlsList);
+      if (!response.ok) {
+        addLog("无法启动检测", "error");
+        setPanel((p) => ({ ...p, running: false }));
+        return;
+      }
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() ?? "";
+
+        for (const chunk of chunks) {
+          const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!dataLine) continue;
+          const ev: any = JSON.parse(dataLine.slice(6));
+
+          if (ev.type === "inspected") {
+            const statusIcon = ev.status_category === "indexed" ? "✅" :
+              ev.status_category === "crawled_not_indexed" ? "🔄" :
+              ev.status_category === "pending_crawl" ? "⏳" :
+              ev.status_category === "blocked" ? "🚫" :
+              ev.status_category === "error" ? "❌" : "❓";
+            const coverageCn = COVERAGE_STATE_MAP[ev.category] || ev.category;
+            addLog(`${statusIcon} ${coverageCn} — ${ev.url}`, ev.is_indexed ? "ok" : "url");
+            setUrls((prev) =>
+              prev.map((u) =>
+                u.url === ev.url ? {
+                  ...u,
+                  category: ev.category,
+                  coverage_state: ev.category,
+                  status_category: ev.status_category,
+                  verdict: ev.verdict,
+                  indexed: ev.is_indexed || u.indexed,
+                  inspected_at: new Date().toISOString().slice(0, 10),
+                } : u
+              )
+            );
+          }
+          if (ev.type === "done") {
+            addLog(`✓ 完成 — 已检测 ${ev.count} 个网址，${ev.indexed ?? 0} 个已收录`, "ok");
+            setPanel((p) => ({ ...p, running: false }));
+            loadSite();
+            loadUrls();
+          }
+          if (ev.type === "error") {
+            addLog(`✗ ${formatInspectionError(ev.message)}`, "error");
+            setPanel((p) => ({ ...p, running: false }));
+          }
+        }
+      }
+    } catch (e: any) {
+      addLog(`✗ ${e.message}`, "error");
+      setPanel((p) => ({ ...p, running: false }));
+    }
+  }
+
+  // --- Inspect All Pending ---
+  function handleInspectPending() {
+    if (esRef.current) esRef.current.close();
+    setPanel({ visible: true, running: true, title: "深度检测所有待处理 URL", log: [], progress: null });
+
+    const es = new EventSource(api.inspectPendingStreamUrl(siteName));
+    esRef.current = es;
+
+    es.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      if (ev.type === "status") addLog(ev.message);
+      if (ev.type === "inspected") {
+        const statusIcon = ev.status_category === "indexed" ? "✅" :
+          ev.status_category === "crawled_not_indexed" ? "🔄" :
+          ev.status_category === "pending_crawl" ? "⏳" :
+          ev.status_category === "blocked" ? "🚫" :
+          ev.status_category === "error" ? "❌" : "❓";
+        const coverageCn = COVERAGE_STATE_MAP[ev.category] || ev.category;
+        setPanel((p) => ({
+          ...p,
+          log: [...p.log, { text: `${statusIcon} ${coverageCn} — ${ev.url}`, kind: ev.is_indexed ? "ok" : "url" as const }],
+          progress: { done: ev.done, total: ev.total },
+        }));
+        setUrls((prev) =>
+          prev.map((u) =>
+            u.url === ev.url ? {
+              ...u,
+              category: ev.category,
+              coverage_state: ev.category,
+              status_category: ev.status_category,
+              verdict: ev.verdict,
+              indexed: ev.is_indexed || u.indexed,
+              inspected_at: new Date().toISOString().slice(0, 10),
+            } : u
+          )
+        );
+      }
+      if (ev.type === "done") {
+        addLog(`✓ 完成 — 已检测 ${ev.count} 个，${ev.indexed ?? 0} 个已收录`, "ok");
+        setPanel((p) => ({ ...p, running: false }));
+        es.close();
+        esRef.current = null;
+        loadSite();
+        loadUrls();
+      }
+      if (ev.type === "error") {
+        addLog(`✗ ${formatInspectionError(ev.message)}`, "error");
+        setPanel((p) => ({ ...p, running: false }));
+        es.close();
+        esRef.current = null;
+      }
+    };
+    es.onerror = () => {
+      addLog("连接丢失", "error");
+      setPanel((p) => ({ ...p, running: false }));
+      es.close();
+      esRef.current = null;
+    };
+  }
+
   // --- Fetch URLs ---
   async function handleFetchUrls() {
     setUrlAction(true);
@@ -305,6 +495,21 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     ? Math.round((panel.progress.done / panel.progress.total) * 100)
     : 0;
 
+  function SortHeader({ label, field, className = "" }: { label: string; field: SortKey; className?: string }) {
+    const active = sortKey === field;
+    return (
+      <th
+        className={`text-left px-4 py-2.5 font-medium text-slate-500 dark:text-slate-400 cursor-pointer select-none hover:text-slate-800 dark:hover:text-white transition-colors ${className}`}
+        onClick={() => handleSort(field)}
+      >
+        {label}
+        {active && <span className="ml-1 text-xs">{sortDir === "asc" ? "↑" : "↓"}</span>}
+      </th>
+    );
+  }
+
+  const displayUrls = sortedUrls(urls);
+
   return (
     <div className="p-6 max-w-[90rem] mx-auto space-y-6">
 
@@ -349,12 +554,15 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
 
       {activeTab === "google" && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-          {/* Stats and Charts */}
-          <AnalyticsCharts 
-            total={site.urls_total} 
-            indexed={site.urls_indexed} 
-            pending={site.urls_pending} 
+          <AnalyticsCharts
+            total={site.urls_total}
+            indexed={site.urls_indexed}
+            pending={site.urls_pending}
             gscIndexed={site.urls_gsc_indexed ?? 0}
+            crawledNotIndexed={site.urls_crawled_not_indexed ?? 0}
+            pendingCrawl={site.urls_pending_crawl ?? 0}
+            blocked={site.urls_blocked ?? 0}
+            inspected={site.urls_inspected ?? 0}
           />
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -382,6 +590,9 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                 <Btn onClick={handleSyncGsc} disabled={urlAction || panel.running} variant="purple">
                   {t("detail.sync_gsc")}
                 </Btn>
+                <Btn onClick={handleInspectPending} disabled={urlAction || panel.running} variant="green">
+                  深度检测
+                </Btn>
               </div>
             </div>
 
@@ -398,7 +609,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                           color: q.remaining === 0 ? "var(--color-danger)" :
                             q.remaining < 50 ? "var(--color-warn)" : "var(--color-success)"
                         }}>
-                          {q.used} / {q.limit} {t("settings.urls_per_day").replace("200 个 URL", "").replace("200 URLs per day", "used")} · {q.remaining} {t("detail.urls")} 剩余
+                          {q.used} / {q.limit} · {q.remaining} 剩余
                         </span>
                       </div>
                       <div className="rounded-full h-1.5 bg-slate-200 dark:bg-white/10">
@@ -423,7 +634,6 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
       {activeTab === "bing" && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Bing Actions */}
             <div className="rounded-2xl border border-slate-200 dark:border-white/10 p-5 bg-white/80 dark:bg-slate-900/60 backdrop-blur-xl shadow-xl flex flex-col justify-between">
               <div>
                 <h2 className="text-lg font-medium text-slate-800 dark:text-slate-200 mb-2">{t("detail.tab_bing")}</h2>
@@ -447,7 +657,6 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
               </div>
             </div>
 
-            {/* Bing Help Guide */}
             <div className="rounded-2xl border border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-800/40 p-5 shadow-inner">
               <p className="font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
                 <span className="text-amber-500 dark:text-amber-400 text-lg">💡</span>
@@ -487,6 +696,9 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
             <span className="self-center text-sm text-slate-500 dark:text-slate-400">
               {t("detail.selected")} {selected.size} {t("detail.items")}
             </span>
+            <Btn onClick={handleInspect} disabled={urlAction || panel.running} variant="purple">
+              {t("detail.inspect")}
+            </Btn>
             <Btn onClick={handleMarkIndexed} disabled={urlAction} variant="green">
               {t("detail.mark_sent")}
             </Btn>
@@ -545,7 +757,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
               <p
                 key={i}
                 className={
-                  entry.kind === "error" ? "text-red-500 dark:text-red-400" :
+                  entry.kind === "error" ? "text-red-500 dark:text-red-400 whitespace-pre-wrap" :
                   entry.kind === "ok" ? "text-emerald-600 dark:text-emerald-400" :
                   entry.kind === "url" ? "text-slate-500 dark:text-slate-400" :
                   "text-slate-800 dark:text-slate-200"
@@ -561,11 +773,10 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
 
       {/* URL table */}
       <div>
-        {/* Bing Table Note */}
         {activeTab === "bing" && (
           <div className="mb-4 text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 rounded-xl border border-amber-200 dark:border-amber-500/20 flex items-center gap-2">
-            <span>ℹ️</span> 
-            <p><strong>注意：</strong>下面显示的 URL“已发送”状态主要反映 Google 的提交记录。Bing IndexNow 的提交是独立的且不会单独追踪此列表中的每一项的缓存记录。</p>
+            <span>ℹ️</span>
+            <p><strong>注意：</strong>下面显示的 URL"已发送"状态主要反映 Google 的提交记录。Bing IndexNow 的提交是独立的且不会单独追踪此列表中的每一项的缓存记录。</p>
           </div>
         )}
 
@@ -594,8 +805,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
               key={f}
               onClick={() => { setUrlFilter(f); setUrlPage(1); setSelected(new Set()); }}
               className={`text-sm px-3 py-1.5 rounded-full transition-colors ${
-                urlFilter === f 
-                  ? "bg-violet-600 text-white" 
+                urlFilter === f
+                  ? "bg-violet-600 text-white"
                   : "bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-white/10"
               }`}
             >
@@ -617,23 +828,25 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                     className="rounded border-slate-300 dark:border-white/20"
                   />
                 </th>
-                <th className="text-left px-4 py-2.5 font-medium text-slate-500 dark:text-slate-400">{t("detail.url")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-24 text-slate-500 dark:text-slate-400">{t("detail.category")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-24 text-slate-500 dark:text-slate-400">{t("detail.status")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-20 text-slate-500 dark:text-slate-400">{t("detail.priority_label")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-28 text-slate-500 dark:text-slate-400">{t("detail.sent_time")}</th>
-                <th className="text-left px-4 py-2.5 font-medium w-24 text-slate-500 dark:text-slate-400">{t("detail.lastmod")}</th>
-                {activeTab === "google" && <th className="text-left px-4 py-2.5 font-medium w-28 text-slate-500 dark:text-slate-400">GSC</th>}
+                <SortHeader label={t("detail.url")} field="url" />
+                <SortHeader label="GSC 索引状态" field="coverage_state" className="w-44" />
+                <SortHeader label={t("detail.status")} field="status" className="w-24" />
+                <SortHeader label={t("detail.priority_label")} field="priority" className="w-20" />
+                <SortHeader label={t("detail.sent_time")} field="indexed_at" className="w-28" />
+                <SortHeader label={t("detail.lastmod")} field="lastmod" className="w-24" />
+                {activeTab === "google" && <SortHeader label="GSC" field="gsc_status" className="w-28" />}
               </tr>
             </thead>
             <tbody>
-              {urls.length === 0 ? (
+              {displayUrls.length === 0 ? (
                 <tr>
                   <td colSpan={activeTab === "google" ? 8 : 7} className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
                     {t("detail.no_urls")}
                   </td>
                 </tr>
-              ) : urls.map((u, i) => (
+              ) : displayUrls.map((u, i) => {
+                const coverageCn = u.coverage_state ? (COVERAGE_STATE_MAP[u.coverage_state] || u.coverage_state) : null;
+                return (
                 <tr
                   key={u.url}
                   className={`border-t border-slate-100 dark:border-white/5 ${
@@ -651,13 +864,30 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                     </a>
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
-                    {u.category}
+                    {u.status_category ? (
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        u.status_category === "indexed" ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400" :
+                        u.status_category === "crawled_not_indexed" ? "bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400" :
+                        u.status_category === "pending_crawl" ? "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400" :
+                        u.status_category === "blocked" ? "bg-red-50 text-red-600 dark:bg-red-500/15 dark:text-red-400" :
+                        u.status_category === "error" ? "bg-red-50 text-red-600 dark:bg-red-500/15 dark:text-red-400" :
+                        "bg-slate-100 text-slate-500 dark:bg-white/5 dark:text-slate-400"
+                      }`} title={u.coverage_state || u.category || ""}>
+                        {coverageCn || (u.status_category === "indexed" ? "已收录" :
+                         u.status_category === "crawled_not_indexed" ? "已抓取 - 尚未编入索引" :
+                         u.status_category === "pending_crawl" ? "已发现 - 当前未编入索引" :
+                         u.status_category === "blocked" ? "被阻止" :
+                         u.status_category === "error" ? "错误" : u.category || "—")}
+                      </span>
+                    ) : (
+                      <span title={u.category || ""}>{u.category || "—"}</span>
+                    )}
                   </td>
                   <td className="px-4 py-2">
                     <span
                       className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                        u.indexed 
-                          ? "bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400" 
+                        u.indexed
+                          ? "bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400"
                           : "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400"
                       }`}
                     >
@@ -688,7 +918,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   </td>
                   )}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -731,7 +962,6 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   );
 }
 
-// --- Small button helper ---
 function Btn({
   children,
   onClick,

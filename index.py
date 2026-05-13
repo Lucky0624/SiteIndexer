@@ -1,9 +1,10 @@
-from smartinstantindex.sitemaps import fetch_urls_from_sitemap_recursive
-from smartinstantindex.utils import (
+from siteindexer.sitemaps import fetch_urls_from_sitemap_recursive
+from siteindexer.utils import (
     load_json, save_urls_to_file, APP_LOGGER,
-    normalize_config, migrate_urls, filter_urls, update_quota_batch, build_indexing_plan,
+    normalize_config, migrate_urls, filter_urls, sync_urls,
+    update_quota_batch, build_indexing_plan,
 )
-from smartinstantindex.indexing import index_url
+from siteindexer.indexing import index_url
 
 config = normalize_config(load_json("config.json"))
 sites = config["sites"]
@@ -12,48 +13,23 @@ proxy = config.get("proxy")
 for site in sites:
     APP_LOGGER.info(f"Processing site: {site['name']} — {site['sitemap_url']}")
 
-    # Fetch and filter URLs from sitemap
     site_proxy = site.get("proxy", proxy)
     raw_urls = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site_proxy)
     sitemap_urls = filter_urls(raw_urls, site)
     APP_LOGGER.info(f"Total URLs after filtering: {len(sitemap_urls)}")
 
-    # Load and migrate existing state
     existing_urls = migrate_urls(load_json(site["urls_file"]))
 
-    # Add new URLs
-    NEW_URLS = 0
-    for url in sitemap_urls:
-        if url not in existing_urls:
-            NEW_URLS += 1
-            existing_urls[url] = {"indexed": False, "lastmod": sitemap_urls[url]}
-
-    # Remove URLs deleted from the sitemap (not just filtered out by patterns)
-    DELETED_URLS = 0
-    for url in list(existing_urls):
-        if url not in raw_urls:
-            DELETED_URLS += 1
-            del existing_urls[url]
-
-    # Reset URLs whose lastmod changed
-    if site["track_lastmod"]:
-        for url, entry in existing_urls.items():
-            new_lastmod = sitemap_urls.get(url)
-            if new_lastmod and new_lastmod != entry.get("lastmod"):
-                APP_LOGGER.info(
-                    f"lastmod changed for {url}: {entry.get('lastmod')} → {new_lastmod}"
-                )
-                entry["indexed"] = False
-                entry["lastmod"] = new_lastmod
-
+    result = sync_urls(existing_urls, sitemap_urls, raw_urls, site)
     save_urls_to_file(existing_urls, site["urls_file"])
 
-    if NEW_URLS:
-        APP_LOGGER.info(f"New URLs added: {NEW_URLS}")
-    if DELETED_URLS:
-        APP_LOGGER.info(f"Deleted URLs: {DELETED_URLS}")
+    if result["new_count"]:
+        APP_LOGGER.info(f"New URLs added: {result['new_count']}")
+    if result["del_count"]:
+        APP_LOGGER.info(f"Deleted URLs: {result['del_count']}")
+    if result["reset_count"]:
+        APP_LOGGER.info(f"Lastmod reset URLs: {result['reset_count']}")
 
-    # Index pending URLs (rotating across credentials when quota is exhausted)
     plan = build_indexing_plan(site["credentials"])
     total_capacity = sum(cap for _, cap in plan)
     pending_urls = [url for url, entry in existing_urls.items() if not entry["indexed"]]
@@ -84,10 +60,9 @@ for site in sites:
                     APP_LOGGER.info(f"Quota exhausted for {creds_file}, switching to next credential.")
                     quota_exhausted = True
                     break
-                # Record partial progress before re-raising
                 indexed_tally[creds_file] = indexed_tally.get(creds_file, 0) + batch_indexed
                 raise
-        url_cursor += batch_indexed  # advance by actually indexed count so next credential retries from here
+        url_cursor += batch_indexed
         indexed_tally[creds_file] = indexed_tally.get(creds_file, 0) + batch_indexed
         if quota_exhausted:
             continue

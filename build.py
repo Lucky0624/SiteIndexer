@@ -18,7 +18,7 @@ subprocess.run([
     "--hidden-import", "uvicorn.loops.auto",
     "--hidden-import", "fastapi",
     "--collect-all", "web_local",
-    "--collect-all", "smartinstantindex",
+    "--collect-all", "siteindexer",
     "--hidden-import", "pystray._win32",
     "--hidden-import", "pystray._darwin",
     "--hidden-import", "pystray._xorg",

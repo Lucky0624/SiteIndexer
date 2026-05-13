@@ -3,8 +3,8 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "smartinstantindex"
-version = "1.0.0"
+name = "siteindexer"
+version = "2.0.0"
 description = "Submit website URLs to Google Search via the Indexing API"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,4 +16,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["smartinstantindex*"]
+include = ["siteindexer*"]

@@ -24,26 +24,25 @@ from pydantic import BaseModel
 DATA_DIR = Path(os.environ.get("SMARTINDEX_DATA_DIR", Path(__file__).parent.parent.parent))
 STATIC_DIR = Path(os.environ.get("SMARTINDEX_STATIC_DIR", Path(__file__).parent.parent / "frontend" / "dist"))
 
-sys.path.insert(0, str(DATA_DIR))  # so we can import smartinstantindex.*
+sys.path.insert(0, str(DATA_DIR))
 
-from smartinstantindex.utils import (
+from siteindexer.utils import (
     load_json, save_urls_to_file, normalize_config,
-    migrate_urls, filter_urls, build_indexing_plan,
+    migrate_urls, filter_urls, sync_urls, build_indexing_plan,
     update_quota_batch, get_quota_remaining, QUOTA_LIMIT,
-    DEFAULT_SKIP_EXTENSIONS,
+    DEFAULT_SKIP_EXTENSIONS, GlobalTaskLock,
 )
-from smartinstantindex.sitemaps import fetch_urls_from_sitemap_recursive
-from smartinstantindex.indexing import index_url
-from smartinstantindex.searchconsole import fetch_indexed_pages
+from siteindexer.sitemaps import fetch_urls_from_sitemap_recursive
+from siteindexer.indexing import index_url
+from siteindexer.searchconsole import fetch_indexed_pages, inspect_url
+from siteindexer.constants import BATCH_SAVE_INTERVAL, MAX_RETRY, RETRY_DELAY_SECONDS, BING_INDEXNOW_BATCH_SIZE, HISTORY_MAX_RECORDS, INSPECTION_BATCH_SAVE_INTERVAL
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 _config_lock = threading.Lock()
-BATCH_SAVE_INTERVAL = 10  # save URLs file every N indexed URLs
-MAX_RETRY = 3
-RETRY_DELAY = 2  # seconds
+_task_locks: dict[str, GlobalTaskLock] = {}
 
 def config_path() -> Path:
     return DATA_DIR / "config.json"
@@ -70,7 +69,7 @@ def load_history() -> list:
 
 def save_history(history: list) -> None:
     with open(history_path(), "w") as f:
-        json.dump(history[-200:], f, indent=2)  # keep last 200 records
+        json.dump(history[-HISTORY_MAX_RECORDS:], f, indent=2)
 
 
 def record_history(site_name: str, indexed: int, errors: int, duration_s: float):
@@ -99,7 +98,7 @@ def index_url_with_retry(url, creds_full, index, proxy=None):
             if "429" in msg or "403" in msg or "quota" in msg.lower():
                 raise
             if attempt < MAX_RETRY:
-                time.sleep(RETRY_DELAY * attempt)
+                time.sleep(RETRY_DELAY_SECONDS * attempt)
     raise last_err
 
 
@@ -142,10 +141,13 @@ def quota_for_site(site: dict) -> list[dict]:
 
 def site_stats(site: dict) -> dict:
     urls = load_urls(site)
-    visible = filter_urls({url: data.get("lastmod") for url, data in urls.items()}, site)
-    total = len(visible)
-    indexed = sum(1 for url, u in urls.items() if url in visible and u.get("indexed"))
-    gsc_indexed = sum(1 for url, u in urls.items() if url in visible and u.get("sc_synced_at"))
+    total = len(urls)
+    indexed = sum(1 for u in urls.values() if u.get("indexed"))
+    gsc_indexed = sum(1 for u in urls.values() if u.get("sc_synced_at"))
+    inspected = sum(1 for u in urls.values() if u.get("inspected_at"))
+    crawled_not_indexed = sum(1 for u in urls.values() if u.get("status_category") == "crawled_not_indexed")
+    pending_crawl = sum(1 for u in urls.values() if u.get("status_category") == "pending_crawl")
+    blocked = sum(1 for u in urls.values() if u.get("status_category") == "blocked")
     pending = total - indexed
     return {
         "name": site["name"],
@@ -162,6 +164,10 @@ def site_stats(site: dict) -> dict:
         "urls_indexed": indexed,
         "urls_gsc_indexed": gsc_indexed,
         "urls_pending": pending,
+        "urls_inspected": inspected,
+        "urls_crawled_not_indexed": crawled_not_indexed,
+        "urls_pending_crawl": pending_crawl,
+        "urls_blocked": blocked,
         "quota": quota_for_site(site),
         "credential_proxies": site.get("credential_proxies", {}),
     }
@@ -208,7 +214,7 @@ def _get_category(url: str, site_url: str) -> str:
             return "Home"
         parts = path.split("/")
         return parts[0]
-    except:
+    except Exception:
         return "Other"
 
 @app.get("/api/sites/{name}/categories")
@@ -264,7 +270,15 @@ def list_urls(name: str, filter: str = "all", page: int = 1, page_size: int = 10
             "lastmod": data.get("lastmod"),
             "sc_synced_at": data.get("sc_synced_at"),
             "priority": data.get("priority", "normal"),
-            "category": _get_category(url, site_url),
+            "category": data.get("category") or _get_category(url, site_url),
+            "category_updated_at": data.get("category_updated_at"),
+            "verdict": data.get("verdict"),
+            "status_category": data.get("status_category"),
+            "last_crawl_time": data.get("last_crawl_time"),
+            "page_fetch_state": data.get("page_fetch_state"),
+            "robots_txt_state": data.get("robots_txt_state"),
+            "inspected_at": data.get("inspected_at"),
+            "coverage_state": data.get("coverage_state") or data.get("category"),
         })
 
     if search:
@@ -360,35 +374,15 @@ def fetch_urls(name: str):
     raw = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site_proxy)
     filtered = filter_urls(raw, site)
     existing = load_urls(site)
-    today = str(date.today())
 
-    new_count = 0
-    del_count = 0
-    reset_count = 0
-
-    # Add new URLs
-    for url, lastmod in filtered.items():
-        if url not in existing:
-            existing[url] = {"indexed": False, "lastmod": lastmod}
-            new_count += 1
-        elif site.get("track_lastmod") and lastmod and existing[url].get("lastmod") != lastmod:
-            existing[url]["lastmod"] = lastmod
-            existing[url]["indexed"] = False
-            existing[url].pop("indexed_at", None)
-            reset_count += 1
-
-    # Remove URLs deleted from the sitemap (not just filtered out by patterns)
-    for url in list(existing.keys()):
-        if url not in raw:
-            del existing[url]
-            del_count += 1
+    result = sync_urls(existing, filtered, raw, site)
 
     save_urls_to_file(existing, str(urls_path(site)))
     return {
         "found": len(filtered),
-        "added": new_count,
-        "removed": del_count,
-        "reset": reset_count,
+        "added": result["new_count"],
+        "removed": result["del_count"],
+        "reset": result["reset_count"],
     }
 
 
@@ -504,33 +498,25 @@ def run_selected_stream(name: str, body: dict):
 @app.get("/api/sites/{name}/run/stream")
 def run_stream(name: str):
     site = get_site(name)
+    lock = _task_locks.setdefault(name, GlobalTaskLock())
+    if not lock.acquire(name, blocking=False):
+        raise HTTPException(status_code=409, detail="该站点已有任务正在运行")
 
     def generate():
         def send(event: dict) -> str:
             return f"data: {json.dumps(event)}\n\n"
 
-        yield send({"type": "connected"})
-
         try:
-            # Fetch sitemap
+            yield send({"type": "connected"})
+            today = str(date.today())
+
             yield send({"type": "status", "message": "正在获取 sitemap..."})
             raw = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site.get("proxy"))
             filtered = filter_urls(raw, site)
             yield send({"type": "urls_found", "count": len(filtered)})
 
-            # Sync URLs
             existing = load_urls(site)
-            today = str(date.today())
-            for url, lastmod in filtered.items():
-                if url not in existing:
-                    existing[url] = {"indexed": False, "lastmod": lastmod}
-                elif site.get("track_lastmod") and lastmod and existing[url].get("lastmod") != lastmod:
-                    existing[url]["lastmod"] = lastmod
-                    existing[url]["indexed"] = False
-                    existing[url].pop("indexed_at", None)
-            for url in list(existing.keys()):
-                if url not in raw:
-                    del existing[url]
+            sync_urls(existing, filtered, raw, site)
 
             # Build plan
             plan = build_indexing_plan(site["credentials"])
@@ -616,6 +602,8 @@ def run_stream(name: str):
 
         except Exception as e:
             yield send({"type": "error", "message": str(e)})
+        finally:
+            lock.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
@@ -625,26 +613,28 @@ def run_stream(name: str):
 @app.get("/api/sites/{name}/sync-gsc/stream")
 def sync_gsc_stream(name: str):
     site = get_site(name)
+    lock = _task_locks.setdefault(name, GlobalTaskLock())
+    if not lock.acquire(name, blocking=False):
+        raise HTTPException(status_code=409, detail="该站点已有任务正在运行")
 
     def generate():
         def send(event: dict) -> str:
             return f"data: {json.dumps(event)}\n\n"
 
-        if not site.get("site_url"):
-            yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
-            return
-        if not site.get("credentials"):
-            yield send({"type": "error", "message": "此站点未配置凭据。"})
-            return
-
-        yield send({"type": "status", "message": "正在连接到 Google Search Console..."})
         try:
+            if not site.get("site_url"):
+                yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
+                return
+            if not site.get("credentials"):
+                yield send({"type": "error", "message": "此站点未配置凭据。"})
+                return
+
+            yield send({"type": "status", "message": "正在连接到 Google Search Console..."})
             creds_file = site["credentials"][0]
             cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
             gsc_pages = fetch_indexed_pages(site["site_url"], str(creds_path(creds_file)), proxy=cred_proxy)
             yield send({"type": "status", "message": f"在 GSC 中找到 {len(gsc_pages)} 个已索引页面。"})
 
-            # Normalize both sides: strip trailing slash for comparison
             gsc_normalized = {u.rstrip("/"): u for u in gsc_pages}
 
             existing = load_urls(site)
@@ -662,6 +652,178 @@ def sync_gsc_stream(name: str):
             yield send({"type": "done", "synced": synced, "total": len(gsc_pages)})
         except Exception as e:
             yield send({"type": "error", "message": str(e)})
+        finally:
+            lock.release()
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+# --- SSE: Inspect URLs ---
+
+class InspectRequest(BaseModel):
+    urls: list[str]
+
+@app.post("/api/sites/{name}/inspect/stream")
+def inspect_stream(name: str, body: InspectRequest):
+    site = get_site(name)
+    urls_to_inspect = body.urls
+
+    def generate():
+        def send(event: dict) -> str:
+            return f"data: {json.dumps(event)}\n\n"
+
+        if not site.get("site_url"):
+            yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
+            return
+        if not site.get("credentials"):
+            yield send({"type": "error", "message": "此站点未配置凭据。"})
+            return
+        
+        yield send({"type": "status", "message": f"正在从 Google 获取 {len(urls_to_inspect)} 个 URL 的详细状态..."})
+        
+        try:
+            existing = load_urls(site)
+            today = str(date.today())
+            creds_file = site["credentials"][0]
+            creds_full = str(creds_path(creds_file))
+            
+            count = 0
+            indexed_count = 0
+            for url in urls_to_inspect:
+                if url not in existing:
+                    continue
+                
+                cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
+                res = inspect_url(url, site["site_url"], creds_full, proxy=cred_proxy)
+                
+                existing[url]["category"] = res.get("coverageState", "Unknown")
+                existing[url]["coverage_state"] = res.get("coverageState", "Unknown")
+                existing[url]["category_updated_at"] = today
+                existing[url]["verdict"] = res.get("verdict")
+                existing[url]["status_category"] = res.get("status_category", "unknown")
+                existing[url]["last_crawl_time"] = res.get("lastCrawlTime")
+                existing[url]["page_fetch_state"] = res.get("pageFetchState")
+                existing[url]["robots_txt_state"] = res.get("robotsTxtState")
+                existing[url]["inspected_at"] = today
+
+                if res.get("is_indexed"):
+                    existing[url]["indexed"] = True
+                    if not existing[url].get("indexed_at"):
+                        existing[url]["indexed_at"] = today
+                    indexed_count += 1
+                
+                count += 1
+                yield send({
+                    "type": "inspected",
+                    "url": url,
+                    "category": res.get("coverageState", "Unknown"),
+                    "verdict": res.get("verdict"),
+                    "status_category": res.get("status_category", "unknown"),
+                    "last_crawl_time": res.get("lastCrawlTime"),
+                    "page_fetch_state": res.get("pageFetchState"),
+                    "robots_txt_state": res.get("robotsTxtState"),
+                    "is_indexed": res.get("is_indexed", False),
+                    "done": count,
+                    "total": len(urls_to_inspect),
+                })
+            
+            save_urls_to_file(existing, str(urls_path(site)))
+            yield send({"type": "done", "count": count, "indexed": indexed_count})
+        except Exception as e:
+            yield send({"type": "error", "message": str(e)})
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/sites/{name}/inspect-pending/stream")
+def inspect_pending_stream(name: str):
+    site = get_site(name)
+    lock = _task_locks.setdefault(name, GlobalTaskLock())
+    if not lock.acquire(name, blocking=False):
+        raise HTTPException(status_code=409, detail="该站点已有任务正在运行")
+
+    def generate():
+        def send(event: dict) -> str:
+            return f"data: {json.dumps(event)}\n\n"
+
+        try:
+            if not site.get("site_url"):
+                yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
+                return
+            if not site.get("credentials"):
+                yield send({"type": "error", "message": "此站点未配置凭据。"})
+                return
+
+            existing = load_urls(site)
+            pending_urls = [url for url, data in existing.items() if not data.get("indexed")]
+
+            if not pending_urls:
+                yield send({"type": "done", "count": 0, "indexed": 0, "message": "没有待检测的 URL。"})
+                return
+
+            yield send({"type": "status", "message": f"正在检测 {len(pending_urls)} 个待处理 URL 的索引状态..."})
+
+            today = str(date.today())
+            creds_file = site["credentials"][0]
+            creds_full = str(creds_path(creds_file))
+            cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
+
+            count = 0
+            indexed_count = 0
+            unsaved_count = 0
+
+            for url in pending_urls:
+                try:
+                    res = inspect_url(url, site["site_url"], creds_full, proxy=cred_proxy)
+
+                    existing[url]["category"] = res.get("coverageState", "Unknown")
+                    existing[url]["coverage_state"] = res.get("coverageState", "Unknown")
+                    existing[url]["category_updated_at"] = today
+                    existing[url]["verdict"] = res.get("verdict")
+                    existing[url]["status_category"] = res.get("status_category", "unknown")
+                    existing[url]["last_crawl_time"] = res.get("lastCrawlTime")
+                    existing[url]["page_fetch_state"] = res.get("pageFetchState")
+                    existing[url]["robots_txt_state"] = res.get("robotsTxtState")
+                    existing[url]["inspected_at"] = today
+
+                    if res.get("is_indexed"):
+                        existing[url]["indexed"] = True
+                        if not existing[url].get("indexed_at"):
+                            existing[url]["indexed_at"] = today
+                        indexed_count += 1
+
+                    count += 1
+                    unsaved_count += 1
+                    if unsaved_count >= INSPECTION_BATCH_SAVE_INTERVAL:
+                        save_urls_to_file(existing, str(urls_path(site)))
+                        unsaved_count = 0
+
+                    yield send({
+                        "type": "inspected",
+                        "url": url,
+                        "category": res.get("coverageState", "Unknown"),
+                        "verdict": res.get("verdict"),
+                        "status_category": res.get("status_category", "unknown"),
+                        "is_indexed": res.get("is_indexed", False),
+                        "done": count,
+                        "total": len(pending_urls),
+                    })
+                except Exception as e:
+                    msg = str(e)
+                    if "429" in msg or "quota" in msg.lower():
+                        yield send({"type": "error", "message": f"API 配额已用尽，已检测 {count} 个 URL。"})
+                        break
+                    yield send({"type": "error", "message": f"检测 {url} 出错: {msg}"})
+                    break
+
+            if unsaved_count > 0:
+                save_urls_to_file(existing, str(urls_path(site)))
+
+            yield send({"type": "done", "count": count, "indexed": indexed_count})
+        except Exception as e:
+            yield send({"type": "error", "message": str(e)})
+        finally:
+            lock.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
@@ -689,6 +851,7 @@ def list_credentials():
 
 @app.post("/api/credentials/upload")
 async def upload_credential(file: UploadFile = File(...)):
+    safe_name = _safe_creds_filename(file.filename or "")
     content = await file.read()
     try:
         data = json.loads(content)
@@ -697,18 +860,38 @@ async def upload_credential(file: UploadFile = File(...)):
     if data.get("type") != "service_account":
         raise HTTPException(status_code=400, detail="不是有效的 Google 服务账户 JSON")
 
-    dest = DATA_DIR / file.filename
+    dest = DATA_DIR / safe_name
+    resolved = dest.resolve()
+    if not str(resolved).startswith(str(DATA_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="非法文件路径")
     dest.write_bytes(content)
     return {
-        "filename": file.filename,
+        "filename": safe_name,
         "client_email": data.get("client_email", ""),
         "project_id": data.get("project_id", ""),
     }
 
 
+def _safe_creds_filename(filename: str) -> str:
+    """Validate and sanitize a credentials filename to prevent path traversal."""
+    if not filename:
+        raise HTTPException(status_code=400, detail="文件名不能为空")
+    if "\\" in filename or "/" in filename:
+        raise HTTPException(status_code=400, detail="文件名不能包含路径分隔符")
+    if filename in ("config.json", "quota.json"):
+        raise HTTPException(status_code=400, detail="不能操作系统配置文件")
+    if not filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="只支持 .json 文件")
+    return filename
+
+
 @app.delete("/api/credentials/{filename}")
 def delete_credential(filename: str):
+    filename = _safe_creds_filename(filename)
     target = DATA_DIR / filename
+    resolved = target.resolve()
+    if not str(resolved).startswith(str(DATA_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="非法文件路径")
     if not target.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
     target.unlink()
@@ -779,68 +962,72 @@ def submit_bing_stream(name: str):
     site = get_site(name)
     config = get_config()
     api_key = config.get("indexnow_key", "")
+    lock = _task_locks.setdefault(name, GlobalTaskLock())
+    if not lock.acquire(name, blocking=False):
+        raise HTTPException(status_code=409, detail="该站点已有任务正在运行")
 
     def generate():
         import requests as http_requests
         def send(event: dict) -> str:
             return f"data: {json.dumps(event)}\n\n"
 
-        if not api_key:
-            yield send({"type": "error", "message": "未配置 IndexNow API Key，请先在设置中填写。"})
-            return
-
-        yield send({"type": "status", "message": "正在准备提交到 Bing IndexNow..."})
-
-        existing = load_urls(site)
-        visible = filter_urls({url: data.get("lastmod") for url, data in existing.items()}, site)
-        pending_urls = [u for u in visible if not existing.get(u, {}).get("bing_submitted")]
-
-        if not pending_urls:
-            yield send({"type": "done", "submitted": 0, "message": "所有 URL 均已提交过 Bing。"})
-            return
-
-        yield send({"type": "status", "message": f"共 {len(pending_urls)} 个 URL 待提交到 Bing"})
-
-        # Parse host from first URL
-        from urllib.parse import urlparse
-        host = urlparse(pending_urls[0]).netloc
-
-        # IndexNow supports batch of up to 10000 URLs
-        batch_size = 500
-        total_submitted = 0
-
-        for i in range(0, len(pending_urls), batch_size):
-            batch = pending_urls[i:i + batch_size]
-            try:
-                payload = {
-                    "host": host,
-                    "key": api_key,
-                    "urlList": batch,
-                }
-                key_location = config.get("indexnow_keyLocation", "")
-                if key_location:
-                    payload["keyLocation"] = key_location
-                resp = http_requests.post(
-                    INDEXNOW_ENDPOINT,
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                    timeout=30,
-                )
-                if resp.status_code in (200, 202):
-                    for url in batch:
-                        if url in existing:
-                            existing[url]["bing_submitted"] = str(date.today())
-                    total_submitted += len(batch)
-                    save_urls_to_file(existing, str(urls_path(site)))
-                    yield send({"type": "progress", "submitted": total_submitted, "total": len(pending_urls)})
-                else:
-                    yield send({"type": "error", "message": f"Bing 返回状态码 {resp.status_code}: {resp.text[:200]}"})
-                    return
-            except Exception as e:
-                yield send({"type": "error", "message": f"提交到 Bing 出错: {str(e)}"})
+        try:
+            if not api_key:
+                yield send({"type": "error", "message": "未配置 IndexNow API Key，请先在设置中填写。"})
                 return
 
-        yield send({"type": "done", "submitted": total_submitted, "message": f"成功提交 {total_submitted} 个 URL 到 Bing"})
+            yield send({"type": "status", "message": "正在准备提交到 Bing IndexNow..."})
+
+            existing = load_urls(site)
+            visible = filter_urls({url: data.get("lastmod") for url, data in existing.items()}, site)
+            pending_urls = [u for u in visible if not existing.get(u, {}).get("bing_submitted")]
+
+            if not pending_urls:
+                yield send({"type": "done", "submitted": 0, "message": "所有 URL 均已提交过 Bing。"})
+                return
+
+            yield send({"type": "status", "message": f"共 {len(pending_urls)} 个 URL 待提交到 Bing"})
+
+            from urllib.parse import urlparse
+            host = urlparse(pending_urls[0]).netloc
+
+            batch_size = BING_INDEXNOW_BATCH_SIZE
+            total_submitted = 0
+
+            for i in range(0, len(pending_urls), batch_size):
+                batch = pending_urls[i:i + batch_size]
+                try:
+                    payload = {
+                        "host": host,
+                        "key": api_key,
+                        "urlList": batch,
+                    }
+                    key_location = config.get("indexnow_keyLocation", "")
+                    if key_location:
+                        payload["keyLocation"] = key_location
+                    resp = http_requests.post(
+                        INDEXNOW_ENDPOINT,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                        timeout=30,
+                    )
+                    if resp.status_code in (200, 202):
+                        for url in batch:
+                            if url in existing:
+                                existing[url]["bing_submitted"] = str(date.today())
+                        total_submitted += len(batch)
+                        save_urls_to_file(existing, str(urls_path(site)))
+                        yield send({"type": "progress", "submitted": total_submitted, "total": len(pending_urls)})
+                    else:
+                        yield send({"type": "error", "message": f"Bing 返回状态码 {resp.status_code}: {resp.text[:200]}"})
+                        return
+                except Exception as e:
+                    yield send({"type": "error", "message": f"提交到 Bing 出错: {str(e)}"})
+                    return
+
+            yield send({"type": "done", "submitted": total_submitted, "message": f"成功提交 {total_submitted} 个 URL 到 Bing"})
+        finally:
+            lock.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
