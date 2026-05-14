@@ -64,8 +64,8 @@ export default function Sidebar({ view, navigate }: Props) {
       {/* Logo */}
       <div className="px-5 py-5 border-b border-slate-200 dark:border-white/5">
         <div className="flex items-center gap-3">
-          <img src="/android-chrome-192x192.png" alt="智能快速收录" className="w-8 h-8 rounded-lg shrink-0 shadow-sm" />
-          <span className="font-bold text-base text-slate-800 dark:text-slate-100 tracking-tight">智能快速收录</span>
+          <img src="/favicon.png" alt="SiteIndexer" className="w-8 h-8 rounded-lg shrink-0 shadow-sm" />
+          <span className="font-bold text-base text-slate-800 dark:text-slate-100 tracking-tight">SiteIndexer</span>
         </div>
       </div>
 

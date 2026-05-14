@@ -15,14 +15,8 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: SmartInstantIndex-windows.exe
-            binary_path: dist/SmartInstantIndex.exe
-          - os: ubuntu-latest
-            artifact_name: SmartInstantIndex-linux
-            binary_path: dist/SmartInstantIndex
-          - os: macos-latest
-            artifact_name: SmartInstantIndex-macos
-            binary_path: dist/SmartInstantIndex
+            artifact_name: SiteIndexer-windows.exe
+            binary_path: dist/SiteIndexer.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -69,7 +63,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            SmartInstantIndex-windows.exe/SmartInstantIndex.exe
-            SmartInstantIndex-linux/SmartInstantIndex
-            SmartInstantIndex-macos/SmartInstantIndex
+            SiteIndexer-windows.exe/SiteIndexer.exe
           generate_release_notes: true
