@@ -5,6 +5,8 @@ sep = ";" if sys.platform == "win32" else ":"
 
 subprocess.run([
     sys.executable, "-m", "PyInstaller",
+    "--clean",
+    "--noconfirm",
     "--onefile",
     "--windowed",
     "--name", "SiteIndexer",
@@ -17,11 +19,9 @@ subprocess.run([
     "--hidden-import", "uvicorn.protocols.websockets.auto",
     "--hidden-import", "uvicorn.loops.auto",
     "--hidden-import", "fastapi",
-    "--collect-all", "web_local",
+    "--hidden-import", "web_local.backend.routes",
     "--collect-all", "siteindexer",
     "--hidden-import", "pystray._win32",
-    "--hidden-import", "pystray._darwin",
-    "--hidden-import", "pystray._xorg",
     "--hidden-import", "PIL.Image",
     "--hidden-import", "PIL.PngImagePlugin",
     "app_web.py",

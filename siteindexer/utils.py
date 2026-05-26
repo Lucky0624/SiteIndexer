@@ -4,6 +4,7 @@ import logging.config
 import os
 import re
 import shutil
+import tempfile
 import threading
 from datetime import date
 
@@ -68,7 +69,7 @@ def _get_file_lock(file_path: str) -> threading.Lock:
 
 def load_json(file_path):
     try:
-        with open(file_path, 'r') as file:
+        with open(file_path, 'r', encoding='utf-8') as file:
             return json.load(file)
     except FileNotFoundError:
         return {}
@@ -91,12 +92,36 @@ def backup_file(file_path: str, max_backups: int = 3) -> None:
     shutil.copy2(file_path, f"{file_path}.1")
 
 
-def save_urls_to_file(urls, file_path):
+def _write_json_atomic(data, file_path: str, indent: int = 4) -> None:
+    """Write JSON through a same-directory temporary file and atomic replace."""
+    directory = os.path.dirname(os.path.abspath(file_path))
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=directory,
+        prefix=f".{os.path.basename(file_path)}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=indent, ensure_ascii=False)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp_path, file_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def save_json_atomic(data, file_path: str, indent: int = 4, backup: bool = False) -> None:
     lock = _get_file_lock(file_path)
     with lock:
-        backup_file(file_path)
-        with open(file_path, 'w') as file:
-            json.dump(urls, file, indent=4)
+        if backup:
+            backup_file(file_path)
+        _write_json_atomic(data, file_path, indent=indent)
+
+
+def save_urls_to_file(urls, file_path):
+    save_json_atomic(urls, file_path, backup=True)
 
 
 def create_logger() -> logging.Logger:
@@ -219,7 +244,8 @@ QUOTA_FILE = "quota.json"
 
 
 def _quota_path():
-    return os.path.join(os.getcwd(), QUOTA_FILE)
+    data_dir = os.environ.get("SMARTINDEX_DATA_DIR", os.getcwd())
+    return os.path.join(data_dir, QUOTA_FILE)
 
 
 def update_quota_batch(credentials_file, count):
@@ -238,8 +264,7 @@ def update_quota_batch(credentials_file, count):
         else:
             quota[credentials_file] = {"date": today, "used": count}
 
-        with open(qp, "w") as f:
-            json.dump(quota, f, indent=4)
+        _write_json_atomic(quota, qp)
 
 
 def get_quota_remaining(credentials_file):
@@ -282,11 +307,20 @@ def sync_urls(existing_urls, sitemap_urls, raw_urls, site_config):
     reset_count = 0
     if site_config.get("track_lastmod"):
         for url, entry in existing_urls.items():
-            new_lastmod = sitemap_urls.get(url)
-            if new_lastmod and new_lastmod != entry.get("lastmod"):
+            if url not in sitemap_urls:
+                continue
+            new_lastmod = sitemap_urls[url]
+            if new_lastmod != entry.get("lastmod"):
                 entry["indexed"] = False
                 entry["lastmod"] = new_lastmod
                 entry.pop("indexed_at", None)
+                entry.pop("completed_via", None)
+                entry.pop("bing_submitted", None)
+                entry.pop("sc_synced_at", None)
+                entry.pop("category", None)
+                entry.pop("coverage_state", None)
+                entry.pop("status_category", None)
+                entry.pop("inspected_at", None)
                 reset_count += 1
 
     return {"new_count": new_count, "del_count": del_count, "reset_count": reset_count}
@@ -303,6 +337,7 @@ def build_indexing_plan(credentials_list):
 
 
 _SENSITIVE_PATTERNS = [
+    re.compile(r'(?<=://)[^/@\s:]+:[^@\s]+@'),
     re.compile(r'[\w.+-]+@[\w-]+\.[\w.-]+'),
     re.compile(r'(?:api[_-]?key|token|secret|password|passwd|pwd|auth)["\s:=]+["\']?([\w\-_.]{8,})["\']?', re.IGNORECASE),
     re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
@@ -313,7 +348,8 @@ def sanitize_error_message(msg: str) -> str:
     """过滤异常信息中的敏感内容（邮箱、密钥、token等），用于统一错误处理。"""
     sanitized = msg
     for pattern in _SENSITIVE_PATTERNS:
-        sanitized = pattern.sub("[REDACTED]", sanitized)
+        replacement = "[REDACTED]@" if pattern.pattern.startswith("(?<=://)") else "[REDACTED]"
+        sanitized = pattern.sub(replacement, sanitized)
     return sanitized
 
 

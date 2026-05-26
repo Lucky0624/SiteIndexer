@@ -1,8 +1,8 @@
 # SiteIndexer
 
-> 🚀 一键将你的网站页面批量提交给 Google Indexing API，加速搜索引擎收录。
+> 🚀 一键将网站页面批量提交给 Google Indexing API，并跟踪后续抓取与收录状态。
 
-SiteIndexer 是一款开源的本地桌面工具，帮助网站运营者通过 Google Indexing API 快速提交 URL，解决新页面迟迟不被 Google 收录的问题。支持多站点管理、多凭据自动轮换、代理隔离和实时可视化进度追踪。
+SiteIndexer 是一款开源的本地桌面工具，帮助网站运营者通过 Google Indexing API 提交 URL 通知，并配合 Search Console 数据观察后续结果。支持多站点管理、多凭据自动轮换、代理隔离和实时可视化进度追踪。
 
 ---
 
@@ -26,11 +26,11 @@ SiteIndexer 是一款开源的本地桌面工具，帮助网站运营者通过 G
 ### 📊 数据可视化
 - 圆环图直观展示已提交 / 待处理比例
 - 每日配额进度条，一目了然
-- GSC 收录状态同步与对比
+- Search Analytics 搜索表现同步与 URL Inspection 收录状态对比
 
 ### 🌐 Google Search Console 集成
-- 支持查询 GSC 中已确认收录的页面
-- 自动标记已收录 URL，避免重复提交
+- 支持查询 Search Analytics 中已有搜索表现的页面
+- 支持通过 URL Inspection 检查真实索引状态
 - 支持域名属性 (`sc-domain:`) 和 URL 前缀属性
 
 ### 💡 智能错误处理
@@ -122,7 +122,7 @@ python build.py
 
 ```
 SiteIndexer
-├── smartinstantindex/      # 核心 Python 库
+├── siteindexer/            # 核心 Python 库
 │   ├── indexing.py          # Google Indexing API 调用（支持代理）
 │   ├── sitemaps.py          # Sitemap 递归解析
 │   ├── searchconsole.py     # GSC API 集成

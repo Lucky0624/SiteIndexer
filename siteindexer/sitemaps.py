@@ -5,8 +5,13 @@ from siteindexer.constants import SITEMAP_TIMEOUT
 from siteindexer.utils import APP_LOGGER
 
 
-def fetch_urls_from_sitemap(sitemap_url, proxy=None):
+class SitemapFetchError(Exception):
+    """Raised when a sitemap cannot be fetched or parsed completely."""
+
+
+def _fetch_sitemap_document(sitemap_url, proxy=None):
     response = None
+    last_error = None
     proxies = {"http": proxy, "https": proxy} if proxy else None
     for target in ("chrome120", "chrome"):
         try:
@@ -14,26 +19,39 @@ def fetch_urls_from_sitemap(sitemap_url, proxy=None):
             if response.status_code == 200:
                 break
         except Exception as e:
+            last_error = e
             APP_LOGGER.debug(f"Error fetching sitemap with {target}: {e}")
             continue
 
-    if response and response.status_code == 200:
-        soup = BeautifulSoup(response.text, features="xml")
+    if response is None or response.status_code != 200:
+        status = response.status_code if response is not None else "No response"
+        APP_LOGGER.warning(f"Failed to fetch sitemap: {sitemap_url} (Status: {status})")
+        detail = f": {last_error}" if last_error else ""
+        raise SitemapFetchError(f"无法获取 sitemap {sitemap_url} (状态: {status}){detail}")
+
+    soup = BeautifulSoup(response.text, features="xml")
+    root = soup.find(["urlset", "sitemapindex"])
+    if root is None:
+        raise SitemapFetchError(f"sitemap 格式无效: {sitemap_url}")
+    return root
+
+
+def fetch_urls_from_sitemap(sitemap_url, proxy=None):
+    root = _fetch_sitemap_document(sitemap_url, proxy=proxy)
+    if root.name == "urlset":
         urls = {}
-        for url_tag in soup.find_all("url"):
+        for url_tag in root.find_all("url", recursive=False):
             loc = url_tag.find("loc")
             if loc:
                 lastmod = url_tag.find("lastmod")
-                urls[loc.text] = lastmod.text if lastmod else None
-        for sitemap_tag in soup.find_all("sitemap"):
-            loc = sitemap_tag.find("loc")
-            if loc and loc.text not in urls:
-                urls[loc.text] = None
+                urls[loc.text.strip()] = lastmod.text.strip() if lastmod else None
         return urls
-    else:
-        status = response.status_code if response else "No response"
-        APP_LOGGER.warning(f"Failed to fetch sitemap: {sitemap_url} (Status: {status})")
-        return {}
+
+    return {
+        loc.text.strip(): None
+        for sitemap_tag in root.find_all("sitemap", recursive=False)
+        if (loc := sitemap_tag.find("loc"))
+    }
 
 
 def fetch_urls_from_sitemap_recursive(sitemap_url, visited_sitemaps=None, proxy=None, _collected=None):
@@ -42,13 +60,26 @@ def fetch_urls_from_sitemap_recursive(sitemap_url, visited_sitemaps=None, proxy=
     if _collected is None:
         _collected = {}
 
+    if sitemap_url in visited_sitemaps:
+        return _collected
     visited_sitemaps.add(sitemap_url)
-    urls = fetch_urls_from_sitemap(sitemap_url, proxy=proxy)
+    root = _fetch_sitemap_document(sitemap_url, proxy=proxy)
 
-    for url, lastmod in urls.items():
-        if not url.endswith(".xml"):
-            _collected[url] = lastmod
-        elif url not in visited_sitemaps:
-            fetch_urls_from_sitemap_recursive(url, visited_sitemaps, proxy=proxy, _collected=_collected)
+    if root.name == "urlset":
+        for url_tag in root.find_all("url", recursive=False):
+            loc = url_tag.find("loc")
+            if loc:
+                lastmod = url_tag.find("lastmod")
+                _collected[loc.text.strip()] = lastmod.text.strip() if lastmod else None
+    else:
+        for sitemap_tag in root.find_all("sitemap", recursive=False):
+            loc = sitemap_tag.find("loc")
+            if loc:
+                fetch_urls_from_sitemap_recursive(
+                    loc.text.strip(),
+                    visited_sitemaps,
+                    proxy=proxy,
+                    _collected=_collected,
+                )
 
     return _collected

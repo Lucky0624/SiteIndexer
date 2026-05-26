@@ -19,7 +19,7 @@ interface Props {
   onSaved: () => void;
 }
 
-const DEFAULT_SKIP = [".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".zip", ".mp4", ".mp3"];
+const DEFAULT_SKIP = [".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".zip", ".mp4"];
 
 export default function SiteForm({ site, onClose, onSaved }: Props) {
   const [name, setName] = useState(site?.name ?? "");
@@ -45,7 +45,7 @@ export default function SiteForm({ site, onClose, onSaved }: Props) {
     api.getCredentials().then(setAvailableCreds).catch(() => {});
   }, []);
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     setSaving(true);
     setError("");

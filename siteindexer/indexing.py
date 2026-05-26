@@ -26,14 +26,19 @@ def _index_url_impl(url, credentials, index, proxy=None):
     for attempt in range(MAX_RETRY):
         try:
             http = credentials.authorize(_get_http(proxy))
-            response, resp_content = http.request(ENDPOINT, method="POST", body=json.dumps(content))
+            response, resp_content = http.request(
+                ENDPOINT,
+                method="POST",
+                body=json.dumps(content),
+                headers={"Content-Type": "application/json"},
+            )
 
             if response.status == 200:
-                APP_LOGGER.info(f"[{index}]URL: {url} indexed.")
+                APP_LOGGER.info(f"[{index}]URL notification submitted: {url}.")
                 return True
 
             if response.status == 429:
-                raise Exception("Rate limit reached. Please wait and try again.")
+                raise Exception("Rate limit reached (429). Please wait and try again.")
 
             if response.status == 403:
                 raise Exception(f"Permission denied (403)")

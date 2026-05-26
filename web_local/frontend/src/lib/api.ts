@@ -23,8 +23,8 @@ export const api = {
 
   // URLs
   getCategories: (name: string) => req<{categories: string[]}>("GET", `/api/sites/${name}/categories`),
-  getUrls: (name: string, filter = "all", page = 1, pageSize = 100, search = "", category = "all") =>
-    req<any>("GET", `/api/sites/${name}/urls?filter=${filter}&page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}&category=${encodeURIComponent(category)}`),
+  getUrls: (name: string, filter = "all", page = 1, pageSize = 100, search = "", category = "all", channel = "google") =>
+    req<any>("GET", `/api/sites/${name}/urls?filter=${filter}&page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}&category=${encodeURIComponent(category)}&channel=${channel}`),
   fetchUrls: (name: string) => req<any>("POST", `/api/sites/${name}/fetch-urls`),
   markIndexed: (name: string, urls: string[]) =>
     req<any>("POST", `/api/sites/${name}/mark-indexed`, { urls }),
@@ -53,17 +53,19 @@ export const api = {
   inspectPendingStreamUrl: (name: string) => `${BASE}/api/sites/${name}/inspect-pending/stream`,
 
   // Run selected URLs via POST + fetch streaming
-  runSelectedStream: (name: string, urls: string[]) =>
+  runSelectedStream: (name: string, urls: string[], signal?: AbortSignal) =>
     fetch(`${BASE}/api/sites/${name}/run/selected/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ urls }),
+      signal,
     }),
 
-  inspectStream: (name: string, urls: string[]) =>
+  inspectStream: (name: string, urls: string[], signal?: AbortSignal) =>
     fetch(`${BASE}/api/sites/${name}/inspect/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ urls }),
+      signal,
     }),
 };

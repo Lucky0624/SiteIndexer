@@ -38,6 +38,7 @@ jobs:
         working-directory: web_local/frontend
         run: |
           npm ci
+          npm run check
           npm run build
 
       - name: Build executable

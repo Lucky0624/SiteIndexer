@@ -1,4 +1,4 @@
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { PieChart, Pie, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 interface Props {
   total: number;
@@ -13,21 +13,17 @@ interface Props {
 
 export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, crawledNotIndexed = 0, pendingCrawl = 0, blocked = 0, inspected = 0 }: Props) {
   const submitData = [
-    { name: '已发送到 Google', value: indexed },
-    { name: '未发送 / 待处理', value: pending },
+    { name: '已发送到 Google', value: indexed, fill: '#8b5cf6' },
+    { name: '未发送 / 待处理', value: pending, fill: '#334155' },
   ];
 
-  const submitColors = ['#8b5cf6', '#334155'];
-
   const gscData = [
-    { name: '已收录', value: gscIndexed },
-    { name: '已抓取 - 尚未编入索引', value: crawledNotIndexed },
-    { name: '已发现 - 当前未编入索引', value: pendingCrawl },
-    { name: '被阻止 / 错误', value: blocked },
-    { name: '未检测', value: Math.max(0, total - gscIndexed - crawledNotIndexed - pendingCrawl - blocked) },
+    { name: 'Inspection 已确认收录', value: gscIndexed, fill: '#10b981' },
+    { name: '已抓取 - 尚未编入索引', value: crawledNotIndexed, fill: '#3b82f6' },
+    { name: '已发现 - 当前未编入索引', value: pendingCrawl, fill: '#f59e0b' },
+    { name: '被阻止 / 错误', value: blocked, fill: '#ef4444' },
+    { name: '未检测', value: Math.max(0, total - gscIndexed - crawledNotIndexed - pendingCrawl - blocked), fill: '#64748b' },
   ].filter(d => d.value > 0);
-
-  const gscColors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#64748b'];
 
   if (total === 0) {
     return (
@@ -52,11 +48,7 @@ export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, c
               paddingAngle={5}
               dataKey="value"
               stroke="none"
-            >
-              {submitData.map((_, index) => (
-                <Cell key={`cell-${index}`} fill={submitColors[index % submitColors.length]} />
-              ))}
-            </Pie>
+            />
             <Tooltip
               contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '8px' }}
               itemStyle={{ color: '#e2e8f0' }}
@@ -68,7 +60,7 @@ export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, c
 
       <div className="flex-1 h-64 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-2xl p-4 shadow-xl">
         <h3 className="text-sm font-medium text-slate-800 dark:text-slate-300 mb-2">
-          Google 索引状态分布
+          URL Inspection 状态分布
           {inspected > 0 && <span className="text-xs text-slate-400 ml-2">({inspected} 已检测)</span>}
         </h3>
         <ResponsiveContainer width="100%" height="100%">
@@ -82,11 +74,7 @@ export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, c
               paddingAngle={2}
               dataKey="value"
               stroke="none"
-            >
-              {gscData.map((_, index) => (
-                <Cell key={`gsc-cell-${index}`} fill={gscColors[index % gscColors.length]} />
-              ))}
-            </Pie>
+            />
             <Tooltip
               contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '8px' }}
               itemStyle={{ color: '#e2e8f0' }}
@@ -103,7 +91,7 @@ export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, c
         </div>
         <div className="bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-2xl p-5 shadow-xl flex-1 flex flex-col justify-center relative overflow-hidden">
           <p className="text-3xl font-bold font-mono text-emerald-600 dark:text-emerald-400 mb-1">{gscIndexed}</p>
-          <p className="text-sm text-slate-500 dark:text-slate-400">GSC 已收录</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Inspection 已收录</p>
         </div>
       </div>
     </div>

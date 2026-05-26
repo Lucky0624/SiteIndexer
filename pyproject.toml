@@ -13,6 +13,13 @@ dependencies = [
     "oauth2client>=4.1",
     "curl_cffi",
     "lxml>=5.2",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "requests>=2.32",
+    "pystray",
+    "pillow",
+    "PySocks",
 ]
 
 [tool.setuptools.packages.find]

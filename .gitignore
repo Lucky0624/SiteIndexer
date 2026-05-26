@@ -57,6 +57,7 @@ siteindexer_error.log
 # Node
 node_modules/
 package-lock.json
+!web_local/frontend/package-lock.json
 
 # Local dev
 .agents/

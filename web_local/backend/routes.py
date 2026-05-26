@@ -8,15 +8,17 @@ import os
 import sys
 import time
 import threading
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -27,12 +29,12 @@ STATIC_DIR = Path(os.environ.get("SMARTINDEX_STATIC_DIR", Path(__file__).parent.
 sys.path.insert(0, str(DATA_DIR))
 
 from siteindexer.utils import (
-    load_json, save_urls_to_file, normalize_config,
+    load_json, save_json_atomic, save_urls_to_file, normalize_config,
     migrate_urls, filter_urls, sync_urls, build_indexing_plan,
     update_quota_batch, get_quota_remaining, QUOTA_LIMIT,
-    DEFAULT_SKIP_EXTENSIONS, GlobalTaskLock,
+    DEFAULT_SKIP_EXTENSIONS, GlobalTaskLock, sanitize_error_message,
 )
-from siteindexer.sitemaps import fetch_urls_from_sitemap_recursive
+from siteindexer.sitemaps import SitemapFetchError, fetch_urls_from_sitemap_recursive
 from siteindexer.indexing import index_url
 from siteindexer.searchconsole import fetch_indexed_pages, inspect_url
 from siteindexer.constants import BATCH_SAVE_INTERVAL, MAX_RETRY, RETRY_DELAY_SECONDS, BING_INDEXNOW_BATCH_SIZE, HISTORY_MAX_RECORDS, INSPECTION_BATCH_SAVE_INTERVAL
@@ -42,6 +44,7 @@ from siteindexer.constants import BATCH_SAVE_INTERVAL, MAX_RETRY, RETRY_DELAY_SE
 # ---------------------------------------------------------------------------
 
 _config_lock = threading.Lock()
+_history_lock = threading.Lock()
 _task_locks: dict[str, GlobalTaskLock] = {}
 
 def config_path() -> Path:
@@ -58,8 +61,7 @@ def get_config() -> dict:
 
 def save_config(config: dict) -> None:
     with _config_lock:
-        with open(config_path(), "w") as f:
-            json.dump(config, f, indent=4)
+        save_json_atomic(config, str(config_path()))
 
 
 def load_history() -> list:
@@ -68,21 +70,22 @@ def load_history() -> list:
 
 
 def save_history(history: list) -> None:
-    with open(history_path(), "w") as f:
-        json.dump(history[-HISTORY_MAX_RECORDS:], f, indent=2)
+    with _history_lock:
+        save_json_atomic(history[-HISTORY_MAX_RECORDS:], str(history_path()), indent=2)
 
 
 def record_history(site_name: str, indexed: int, errors: int, duration_s: float):
-    history = load_history()
-    history.append({
-        "site": site_name,
-        "date": str(date.today()),
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "indexed": indexed,
-        "errors": errors,
-        "duration_s": round(duration_s, 1),
-    })
-    save_history(history)
+    with _history_lock:
+        history = load_history()
+        history.append({
+            "site": site_name,
+            "date": str(date.today()),
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "indexed": indexed,
+            "errors": errors,
+            "duration_s": round(duration_s, 1),
+        })
+        save_json_atomic(history[-HISTORY_MAX_RECORDS:], str(history_path()), indent=2)
 
 
 def index_url_with_retry(url, creds_full, index, proxy=None):
@@ -110,8 +113,16 @@ def get_site(name: str) -> dict:
     raise HTTPException(status_code=404, detail=f"站点 '{name}' 不存在")
 
 
+def _data_file_path(filename: str) -> Path:
+    target = (DATA_DIR / filename).resolve()
+    base = DATA_DIR.resolve()
+    if not target.is_relative_to(base):
+        raise HTTPException(status_code=400, detail="非法文件路径")
+    return target
+
+
 def urls_path(site: dict) -> Path:
-    return DATA_DIR / site["urls_file"]
+    return _data_file_path(site["urls_file"])
 
 
 def load_urls(site: dict) -> dict:
@@ -119,14 +130,33 @@ def load_urls(site: dict) -> dict:
 
 
 def creds_path(filename: str) -> Path:
-    return DATA_DIR / filename
+    return _data_file_path(filename)
+
+
+def _acquire_site_task(name: str) -> GlobalTaskLock:
+    lock = _task_locks.setdefault(name, GlobalTaskLock())
+    if not lock.acquire(name, blocking=False):
+        raise HTTPException(status_code=409, detail="该站点已有任务正在运行")
+    return lock
+
+
+@contextmanager
+def _locked_site_action(name: str):
+    lock = _acquire_site_task(name)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _safe_error(error: Exception) -> str:
+    return sanitize_error_message(str(error))
 
 
 def quota_for_site(site: dict) -> list[dict]:
     result = []
+    quota_data = load_json(str(DATA_DIR / "quota.json"))
     for creds_file in site.get("credentials", []):
-        full = str(creds_path(creds_file))
-        quota_data = load_json(str(DATA_DIR / "quota.json"))
         entry = quota_data.get(creds_file, {})
         used = entry.get("used", 0) if entry.get("date") == str(date.today()) else 0
         result.append({
@@ -140,15 +170,28 @@ def quota_for_site(site: dict) -> list[dict]:
 
 
 def site_stats(site: dict) -> dict:
-    urls = load_urls(site)
+    stored_urls = load_urls(site)
+    visible = filter_urls({url: data.get("lastmod") for url, data in stored_urls.items()}, site)
+    urls = {url: stored_urls[url] for url in visible}
     total = len(urls)
-    indexed = sum(1 for u in urls.values() if u.get("indexed"))
-    gsc_indexed = sum(1 for u in urls.values() if u.get("sc_synced_at"))
+    processed = sum(1 for u in urls.values() if u.get("indexed"))
+    submitted = sum(
+        1 for u in urls.values()
+        if u.get("completed_via") in ("google_api", "manual")
+        or (
+            u.get("indexed")
+            and not u.get("completed_via")
+            and not u.get("sc_synced_at")
+            and u.get("status_category") != "indexed"
+        )
+    )
+    gsc_seen = sum(1 for u in urls.values() if u.get("sc_synced_at"))
     inspected = sum(1 for u in urls.values() if u.get("inspected_at"))
+    inspection_indexed = sum(1 for u in urls.values() if u.get("status_category") == "indexed")
     crawled_not_indexed = sum(1 for u in urls.values() if u.get("status_category") == "crawled_not_indexed")
     pending_crawl = sum(1 for u in urls.values() if u.get("status_category") == "pending_crawl")
     blocked = sum(1 for u in urls.values() if u.get("status_category") == "blocked")
-    pending = total - indexed
+    pending = total - processed
     return {
         "name": site["name"],
         "sitemap_url": site["sitemap_url"],
@@ -161,8 +204,10 @@ def site_stats(site: dict) -> dict:
         "include_patterns": site.get("include_patterns", []),
         "credentials": site.get("credentials", []),
         "urls_total": total,
-        "urls_indexed": indexed,
-        "urls_gsc_indexed": gsc_indexed,
+        "urls_indexed": processed,
+        "urls_submitted": submitted,
+        "urls_gsc_indexed": gsc_seen,
+        "urls_inspection_indexed": inspection_indexed,
         "urls_pending": pending,
         "urls_inspected": inspected,
         "urls_crawled_not_indexed": crawled_not_indexed,
@@ -204,8 +249,6 @@ def get_site_stats(name: str):
 
 # --- URL listing ---
 
-from urllib.parse import urlparse
-
 def _get_category(url: str, site_url: str) -> str:
     try:
         parsed = urlparse(url)
@@ -237,9 +280,19 @@ def get_categories(name: str):
 
 
 @app.get("/api/sites/{name}/urls")
-def list_urls(name: str, filter: str = "all", page: int = 1, page_size: int = 100, search: str = "", category: str = "all"):
+def list_urls(
+    name: str,
+    filter: str = "all",
+    page: int = 1,
+    page_size: int = 100,
+    search: str = "",
+    category: str = "all",
+    channel: str = "google",
+):
     site = get_site(name)
     urls = load_urls(site)
+    page = max(1, page)
+    page_size = min(max(1, page_size), 500)
 
     # Apply site filters so excluded URLs are hidden from view
     # (they stay in storage to preserve their indexed state)
@@ -255,20 +308,23 @@ def list_urls(name: str, filter: str = "all", page: int = 1, page_size: int = 10
         if category != "all" and _get_category(url, site_url) != category:
             continue
             
-        indexed = data.get("indexed", False)
-        gsc_indexed = data.get("gsc_indexed", False)
-        if filter == "pending" and indexed:
+        processed = data.get("indexed", False)
+        channel_done = bool(data.get("bing_submitted")) if channel == "bing" else processed
+        gsc_seen = bool(data.get("sc_synced_at"))
+        if filter == "pending" and channel_done:
             continue
-        if filter == "indexed" and not indexed:
+        if filter == "indexed" and not channel_done:
             continue
-        if filter == "gsc_indexed" and not gsc_indexed:
+        if filter == "gsc_indexed" and not gsc_seen:
             continue
         items.append({
             "url": url,
-            "indexed": indexed,
+            "indexed": processed,
             "indexed_at": data.get("indexed_at"),
+            "completed_via": data.get("completed_via"),
             "lastmod": data.get("lastmod"),
             "sc_synced_at": data.get("sc_synced_at"),
+            "bing_submitted": data.get("bing_submitted"),
             "priority": data.get("priority", "normal"),
             "category": data.get("category") or _get_category(url, site_url),
             "category_updated_at": data.get("category_updated_at"),
@@ -297,15 +353,15 @@ def list_urls(name: str, filter: str = "all", page: int = 1, page_size: int = 10
 # --- Site CRUD ---
 
 class SiteCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     sitemap_url: str
     site_url: str = ""
     track_lastmod: bool = False
-    credentials: list[str] = []
-    credential_proxies: dict[str, str] = {}
-    skip_extensions: list[str] = DEFAULT_SKIP_EXTENSIONS
-    exclude_patterns: list[str] = []
-    include_patterns: list[str] = []
+    credentials: list[str] = Field(default_factory=list)
+    credential_proxies: dict[str, str] = Field(default_factory=dict)
+    skip_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_SKIP_EXTENSIONS))
+    exclude_patterns: list[str] = Field(default_factory=list)
+    include_patterns: list[str] = Field(default_factory=list)
 
 
 @app.post("/api/sites")
@@ -345,22 +401,25 @@ class SiteUpdate(BaseModel):
 
 @app.put("/api/sites/{name}")
 def update_site(name: str, body: SiteUpdate):
-    config = get_config()
-    for site in config.get("sites", []):
-        if site["name"] == name:
-            for field, val in body.model_dump(exclude_none=True).items():
-                site[field] = val
-            save_config(config)
-            return site_stats(site)
+    with _locked_site_action(name):
+        config = get_config()
+        for site in config.get("sites", []):
+            if site["name"] == name:
+                for field, val in body.model_dump(exclude_none=True).items():
+                    site[field] = val
+                save_config(config)
+                return site_stats(site)
     raise HTTPException(status_code=404, detail="站点不存在")
 
 
 @app.delete("/api/sites/{name}")
 def delete_site(name: str):
-    config = get_config()
-    sites = config.get("sites", [])
-    config["sites"] = [s for s in sites if s["name"] != name]
-    save_config(config)
+    get_site(name)
+    with _locked_site_action(name):
+        config = get_config()
+        sites = config.get("sites", [])
+        config["sites"] = [s for s in sites if s["name"] != name]
+        save_config(config)
     return {"ok": True}
 
 
@@ -369,34 +428,39 @@ def delete_site(name: str):
 @app.post("/api/sites/{name}/fetch-urls")
 def fetch_urls(name: str):
     site = get_site(name)
-    proxy = get_config().get("proxy")
-    site_proxy = site.get("proxy", proxy)
-    raw = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site_proxy)
-    filtered = filter_urls(raw, site)
-    existing = load_urls(site)
+    with _locked_site_action(name):
+        proxy = get_config().get("proxy")
+        site_proxy = site.get("proxy", proxy)
+        try:
+            raw = fetch_urls_from_sitemap_recursive(site["sitemap_url"], proxy=site_proxy)
+        except SitemapFetchError as e:
+            raise HTTPException(status_code=502, detail=_safe_error(e))
+        filtered = filter_urls(raw, site)
+        existing = load_urls(site)
 
-    result = sync_urls(existing, filtered, raw, site)
-
-    save_urls_to_file(existing, str(urls_path(site)))
-    return {
-        "found": len(filtered),
-        "added": result["new_count"],
-        "removed": result["del_count"],
-        "reset": result["reset_count"],
-    }
+        result = sync_urls(existing, filtered, raw, site)
+        save_urls_to_file(existing, str(urls_path(site)))
+        return {
+            "found": len(filtered),
+            "added": result["new_count"],
+            "removed": result["del_count"],
+            "reset": result["reset_count"],
+        }
 
 
 @app.post("/api/sites/{name}/mark-indexed")
 def mark_indexed(name: str, body: dict):
     site = get_site(name)
     urls_list = body.get("urls", [])
-    existing = load_urls(site)
-    today = str(date.today())
-    for url in urls_list:
-        if url in existing:
-            existing[url]["indexed"] = True
-            existing[url]["indexed_at"] = today
-    save_urls_to_file(existing, str(urls_path(site)))
+    with _locked_site_action(name):
+        existing = load_urls(site)
+        today = str(date.today())
+        for url in urls_list:
+            if url in existing:
+                existing[url]["indexed"] = True
+                existing[url]["indexed_at"] = today
+                existing[url]["completed_via"] = "manual"
+        save_urls_to_file(existing, str(urls_path(site)))
     return {"ok": True}
 
 
@@ -404,13 +468,15 @@ def mark_indexed(name: str, body: dict):
 def reset_urls(name: str, body: dict):
     site = get_site(name)
     urls_list = body.get("urls", [])  # empty = reset all
-    existing = load_urls(site)
-    targets = urls_list if urls_list else list(existing.keys())
-    for url in targets:
-        if url in existing:
-            existing[url]["indexed"] = False
-            existing[url].pop("indexed_at", None)
-    save_urls_to_file(existing, str(urls_path(site)))
+    with _locked_site_action(name):
+        existing = load_urls(site)
+        targets = urls_list if urls_list else list(existing.keys())
+        for url in targets:
+            if url in existing:
+                existing[url]["indexed"] = False
+                existing[url].pop("indexed_at", None)
+                existing[url].pop("completed_via", None)
+        save_urls_to_file(existing, str(urls_path(site)))
     return {"ok": True}
 
 
@@ -422,6 +488,7 @@ def run_selected_stream(name: str, body: dict):
     urls_to_index = body.get("urls", [])
     if not urls_to_index:
         raise HTTPException(status_code=400, detail="未提供 URL")
+    lock = _acquire_site_task(name)
 
     def generate():
         def send(event: dict) -> str:
@@ -435,8 +502,8 @@ def run_selected_stream(name: str, body: dict):
 
             plan = build_indexing_plan(site["credentials"])
             total_capacity = sum(cap for _, cap in plan)
-            # Only include URLs that exist in our data store
-            pending_urls = [u for u in urls_to_index if u in existing][:total_capacity]
+            visible = filter_urls({url: data.get("lastmod") for url, data in existing.items()}, site)
+            pending_urls = [u for u in urls_to_index if u in visible][:total_capacity]
 
             yield send({"type": "plan", "pending": len(urls_to_index), "capacity": total_capacity})
 
@@ -460,6 +527,7 @@ def run_selected_stream(name: str, body: dict):
                         index_url(url, creds_full, global_i + 1, proxy=cred_proxy)
                         existing[url]["indexed"] = True
                         existing[url]["indexed_at"] = today
+                        existing[url]["completed_via"] = "google_api"
                         global_i += 1
                         batch_indexed += 1
                         save_urls_to_file(existing, str(urls_path(site)))
@@ -474,13 +542,13 @@ def run_selected_stream(name: str, body: dict):
                             yield send({"type": "error", "message": f"权限被拒绝 (403) - 凭据 {creds_file} 未被添加为 Search Console 的【拥有者(Owner)】。将跳过此凭据尝试下一个。"})
                             break
                         elif "UNEXPECTED_EOF_WHILE_READING" in msg or "EOF occurred" in msg:
-                            yield send({"type": "error", "message": f"网络连接意外中断 (SSL EOF) - 请检查代理节点是否稳定。当前代理: {cred_proxy or '无'}"})
+                            yield send({"type": "error", "message": f"网络连接意外中断 (SSL EOF) - 请检查代理节点是否稳定。当前代理: {'已配置' if cred_proxy else '无'}"})
                             return
                         elif "ServerNotFoundError" in msg or "Failed to establish a new connection" in msg:
-                            yield send({"type": "error", "message": f"无法连接到 Google 服务器 - 请检查网络或代理设置。当前代理: {cred_proxy or '无'}"})
+                            yield send({"type": "error", "message": f"无法连接到 Google 服务器 - 请检查网络或代理设置。当前代理: {'已配置' if cred_proxy else '无'}"})
                             return
                         else:
-                            yield send({"type": "error", "message": f"提交出错: {msg}"})
+                            yield send({"type": "error", "message": f"提交出错: {_safe_error(e)}"})
                             return
 
                 url_cursor += batch_indexed
@@ -488,7 +556,9 @@ def run_selected_stream(name: str, body: dict):
             yield send({"type": "done", "indexed": global_i, "pending": len(urls_to_index) - global_i})
 
         except Exception as e:
-            yield send({"type": "error", "message": str(e)})
+            yield send({"type": "error", "message": _safe_error(e)})
+        finally:
+            lock.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
@@ -498,9 +568,7 @@ def run_selected_stream(name: str, body: dict):
 @app.get("/api/sites/{name}/run/stream")
 def run_stream(name: str):
     site = get_site(name)
-    lock = _task_locks.setdefault(name, GlobalTaskLock())
-    if not lock.acquire(name, blocking=False):
-        raise HTTPException(status_code=409, detail="该站点已有任务正在运行")
+    lock = _acquire_site_task(name)
 
     def generate():
         def send(event: dict) -> str:
@@ -517,10 +585,11 @@ def run_stream(name: str):
 
             existing = load_urls(site)
             sync_urls(existing, filtered, raw, site)
+            save_urls_to_file(existing, str(urls_path(site)))
 
             # Build plan
             plan = build_indexing_plan(site["credentials"])
-            pending_urls = [u for u, d in existing.items() if not d.get("indexed")]
+            pending_urls = [u for u in filtered if not existing[u].get("indexed")]
             total_capacity = sum(cap for _, cap in plan)
             total_to_index = min(len(pending_urls), total_capacity)
 
@@ -556,6 +625,7 @@ def run_stream(name: str):
                         index_url_with_retry(url, creds_full, global_i + 1, proxy=cred_proxy)
                         existing[url]["indexed"] = True
                         existing[url]["indexed_at"] = today
+                        existing[url]["completed_via"] = "google_api"
                         global_i += 1
                         batch_indexed += 1
                         unsaved_count += 1
@@ -577,17 +647,17 @@ def run_stream(name: str):
                             pending_urls = batch[batch_indexed:] + pending_urls
                             break
                         elif "UNEXPECTED_EOF_WHILE_READING" in msg or "EOF occurred" in msg:
-                            yield send({"type": "error", "message": f"网络连接意外中断 (SSL EOF) - 请检查代理节点是否稳定。当前代理: {cred_proxy or '无'}"})
+                            yield send({"type": "error", "message": f"网络连接意外中断 (SSL EOF) - 请检查代理节点是否稳定。当前代理: {'已配置' if cred_proxy else '无'}"})
                             save_urls_to_file(existing, str(urls_path(site)))
                             record_history(name, global_i, error_count, time.time() - run_start)
                             return
                         elif "ServerNotFoundError" in msg or "Failed to establish a new connection" in msg:
-                            yield send({"type": "error", "message": f"无法连接到 Google 服务器 - 请检查网络或代理设置。当前代理: {cred_proxy or '无'}"})
+                            yield send({"type": "error", "message": f"无法连接到 Google 服务器 - 请检查网络或代理设置。当前代理: {'已配置' if cred_proxy else '无'}"})
                             save_urls_to_file(existing, str(urls_path(site)))
                             record_history(name, global_i, error_count, time.time() - run_start)
                             return
                         else:
-                            yield send({"type": "error", "message": f"提交出错: {msg}"})
+                            yield send({"type": "error", "message": f"提交出错: {_safe_error(e)}"})
                             save_urls_to_file(existing, str(urls_path(site)))
                             record_history(name, global_i, error_count, time.time() - run_start)
                             return
@@ -596,12 +666,12 @@ def run_stream(name: str):
                 if unsaved_count > 0:
                     save_urls_to_file(existing, str(urls_path(site)))
 
-            final_pending = sum(1 for d in existing.values() if not d.get("indexed"))  
+            final_pending = sum(1 for u in filtered if not existing[u].get("indexed"))
             record_history(name, global_i, error_count, time.time() - run_start)
             yield send({"type": "done", "indexed": global_i, "pending": final_pending})
 
         except Exception as e:
-            yield send({"type": "error", "message": str(e)})
+            yield send({"type": "error", "message": _safe_error(e)})
         finally:
             lock.release()
 
@@ -613,9 +683,7 @@ def run_stream(name: str):
 @app.get("/api/sites/{name}/sync-gsc/stream")
 def sync_gsc_stream(name: str):
     site = get_site(name)
-    lock = _task_locks.setdefault(name, GlobalTaskLock())
-    if not lock.acquire(name, blocking=False):
-        raise HTTPException(status_code=409, detail="该站点已有任务正在运行")
+    lock = _acquire_site_task(name)
 
     def generate():
         def send(event: dict) -> str:
@@ -633,7 +701,7 @@ def sync_gsc_stream(name: str):
             creds_file = site["credentials"][0]
             cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
             gsc_pages = fetch_indexed_pages(site["site_url"], str(creds_path(creds_file)), proxy=cred_proxy)
-            yield send({"type": "status", "message": f"在 GSC 中找到 {len(gsc_pages)} 个已索引页面。"})
+            yield send({"type": "status", "message": f"在 GSC 搜索表现中找到 {len(gsc_pages)} 个页面。"})
 
             gsc_normalized = {u.rstrip("/"): u for u in gsc_pages}
 
@@ -647,11 +715,12 @@ def sync_gsc_stream(name: str):
                     if not existing[url].get("indexed"):
                         existing[url]["indexed"] = True
                         existing[url]["indexed_at"] = today
+                        existing[url]["completed_via"] = "gsc_performance"
 
             save_urls_to_file(existing, str(urls_path(site)))
             yield send({"type": "done", "synced": synced, "total": len(gsc_pages)})
         except Exception as e:
-            yield send({"type": "error", "message": str(e)})
+            yield send({"type": "error", "message": _safe_error(e)})
         finally:
             lock.release()
 
@@ -667,21 +736,22 @@ class InspectRequest(BaseModel):
 def inspect_stream(name: str, body: InspectRequest):
     site = get_site(name)
     urls_to_inspect = body.urls
+    lock = _acquire_site_task(name)
 
     def generate():
         def send(event: dict) -> str:
             return f"data: {json.dumps(event)}\n\n"
 
-        if not site.get("site_url"):
-            yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
-            return
-        if not site.get("credentials"):
-            yield send({"type": "error", "message": "此站点未配置凭据。"})
-            return
-        
-        yield send({"type": "status", "message": f"正在从 Google 获取 {len(urls_to_inspect)} 个 URL 的详细状态..."})
-        
         try:
+            if not site.get("site_url"):
+                yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
+                return
+            if not site.get("credentials"):
+                yield send({"type": "error", "message": "此站点未配置凭据。"})
+                return
+
+            yield send({"type": "status", "message": f"正在从 Google 获取 {len(urls_to_inspect)} 个 URL 的详细状态..."})
+
             existing = load_urls(site)
             today = str(date.today())
             creds_file = site["credentials"][0]
@@ -689,6 +759,7 @@ def inspect_stream(name: str, body: InspectRequest):
             
             count = 0
             indexed_count = 0
+            unsaved_count = 0
             for url in urls_to_inspect:
                 if url not in existing:
                     continue
@@ -710,9 +781,14 @@ def inspect_stream(name: str, body: InspectRequest):
                     existing[url]["indexed"] = True
                     if not existing[url].get("indexed_at"):
                         existing[url]["indexed_at"] = today
+                    existing[url]["completed_via"] = "inspection"
                     indexed_count += 1
                 
                 count += 1
+                unsaved_count += 1
+                if unsaved_count >= INSPECTION_BATCH_SAVE_INTERVAL:
+                    save_urls_to_file(existing, str(urls_path(site)))
+                    unsaved_count = 0
                 yield send({
                     "type": "inspected",
                     "url": url,
@@ -727,10 +803,13 @@ def inspect_stream(name: str, body: InspectRequest):
                     "total": len(urls_to_inspect),
                 })
             
-            save_urls_to_file(existing, str(urls_path(site)))
+            if unsaved_count > 0:
+                save_urls_to_file(existing, str(urls_path(site)))
             yield send({"type": "done", "count": count, "indexed": indexed_count})
         except Exception as e:
-            yield send({"type": "error", "message": str(e)})
+            yield send({"type": "error", "message": _safe_error(e)})
+        finally:
+            lock.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
@@ -738,9 +817,7 @@ def inspect_stream(name: str, body: InspectRequest):
 @app.get("/api/sites/{name}/inspect-pending/stream")
 def inspect_pending_stream(name: str):
     site = get_site(name)
-    lock = _task_locks.setdefault(name, GlobalTaskLock())
-    if not lock.acquire(name, blocking=False):
-        raise HTTPException(status_code=409, detail="该站点已有任务正在运行")
+    lock = _acquire_site_task(name)
 
     def generate():
         def send(event: dict) -> str:
@@ -755,7 +832,8 @@ def inspect_pending_stream(name: str):
                 return
 
             existing = load_urls(site)
-            pending_urls = [url for url, data in existing.items() if not data.get("indexed")]
+            visible = filter_urls({url: data.get("lastmod") for url, data in existing.items()}, site)
+            pending_urls = [url for url in visible if not existing[url].get("indexed")]
 
             if not pending_urls:
                 yield send({"type": "done", "count": 0, "indexed": 0, "message": "没有待检测的 URL。"})
@@ -790,6 +868,7 @@ def inspect_pending_stream(name: str):
                         existing[url]["indexed"] = True
                         if not existing[url].get("indexed_at"):
                             existing[url]["indexed_at"] = today
+                        existing[url]["completed_via"] = "inspection"
                         indexed_count += 1
 
                     count += 1
@@ -813,7 +892,7 @@ def inspect_pending_stream(name: str):
                     if "429" in msg or "quota" in msg.lower():
                         yield send({"type": "error", "message": f"API 配额已用尽，已检测 {count} 个 URL。"})
                         break
-                    yield send({"type": "error", "message": f"检测 {url} 出错: {msg}"})
+                    yield send({"type": "error", "message": f"检测 {url} 出错: {_safe_error(e)}"})
                     break
 
             if unsaved_count > 0:
@@ -821,7 +900,7 @@ def inspect_pending_stream(name: str):
 
             yield send({"type": "done", "count": count, "indexed": indexed_count})
         except Exception as e:
-            yield send({"type": "error", "message": str(e)})
+            yield send({"type": "error", "message": _safe_error(e)})
         finally:
             lock.release()
 
@@ -860,10 +939,9 @@ async def upload_credential(file: UploadFile = File(...)):
     if data.get("type") != "service_account":
         raise HTTPException(status_code=400, detail="不是有效的 Google 服务账户 JSON")
 
-    dest = DATA_DIR / safe_name
-    resolved = dest.resolve()
-    if not str(resolved).startswith(str(DATA_DIR.resolve())):
-        raise HTTPException(status_code=400, detail="非法文件路径")
+    dest = creds_path(safe_name)
+    if dest.exists():
+        raise HTTPException(status_code=409, detail="同名凭据已存在，请先删除旧文件或重命名后上传")
     dest.write_bytes(content)
     return {
         "filename": safe_name,
@@ -878,7 +956,7 @@ def _safe_creds_filename(filename: str) -> str:
         raise HTTPException(status_code=400, detail="文件名不能为空")
     if "\\" in filename or "/" in filename:
         raise HTTPException(status_code=400, detail="文件名不能包含路径分隔符")
-    if filename in ("config.json", "quota.json"):
+    if filename in ("config.json", "quota.json", "history.json") or filename.startswith("urls_"):
         raise HTTPException(status_code=400, detail="不能操作系统配置文件")
     if not filename.endswith(".json"):
         raise HTTPException(status_code=400, detail="只支持 .json 文件")
@@ -888,10 +966,14 @@ def _safe_creds_filename(filename: str) -> str:
 @app.delete("/api/credentials/{filename}")
 def delete_credential(filename: str):
     filename = _safe_creds_filename(filename)
-    target = DATA_DIR / filename
-    resolved = target.resolve()
-    if not str(resolved).startswith(str(DATA_DIR.resolve())):
-        raise HTTPException(status_code=400, detail="非法文件路径")
+    used_by = [
+        site["name"]
+        for site in get_config().get("sites", [])
+        if filename in site.get("credentials", [])
+    ]
+    if used_by:
+        raise HTTPException(status_code=409, detail=f"凭据仍被站点使用: {', '.join(used_by)}")
+    target = creds_path(filename)
     if not target.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
     target.unlink()
@@ -923,13 +1005,16 @@ class PriorityUpdate(BaseModel):
 @app.post("/api/sites/{name}/set-priority")
 def set_url_priority(name: str, body: PriorityUpdate):
     site = get_site(name)
-    existing = load_urls(site)
-    updated = 0
-    for url in body.urls:
-        if url in existing:
-            existing[url]["priority"] = body.priority
-            updated += 1
-    save_urls_to_file(existing, str(urls_path(site)))
+    if body.priority not in {"high", "normal", "low"}:
+        raise HTTPException(status_code=400, detail="无效的优先级")
+    with _locked_site_action(name):
+        existing = load_urls(site)
+        updated = 0
+        for url in body.urls:
+            if url in existing:
+                existing[url]["priority"] = body.priority
+                updated += 1
+        save_urls_to_file(existing, str(urls_path(site)))
     return {"updated": updated}
 
 
@@ -987,43 +1072,45 @@ def submit_bing_stream(name: str):
                 return
 
             yield send({"type": "status", "message": f"共 {len(pending_urls)} 个 URL 待提交到 Bing"})
-
-            from urllib.parse import urlparse
-            host = urlparse(pending_urls[0]).netloc
-
-            batch_size = BING_INDEXNOW_BATCH_SIZE
             total_submitted = 0
 
-            for i in range(0, len(pending_urls), batch_size):
-                batch = pending_urls[i:i + batch_size]
-                try:
-                    payload = {
-                        "host": host,
-                        "key": api_key,
-                        "urlList": batch,
-                    }
-                    key_location = config.get("indexnow_keyLocation", "")
-                    if key_location:
-                        payload["keyLocation"] = key_location
-                    resp = http_requests.post(
-                        INDEXNOW_ENDPOINT,
-                        json=payload,
-                        headers={"Content-Type": "application/json"},
-                        timeout=30,
-                    )
-                    if resp.status_code in (200, 202):
+            urls_by_host: dict[str, list[str]] = {}
+            for url in pending_urls:
+                host = urlparse(url).netloc
+                if not host:
+                    yield send({"type": "error", "message": f"无效 URL，无法提交到 Bing: {url}"})
+                    return
+                urls_by_host.setdefault(host, []).append(url)
+
+            for host, host_urls in urls_by_host.items():
+                for i in range(0, len(host_urls), BING_INDEXNOW_BATCH_SIZE):
+                    batch = host_urls[i:i + BING_INDEXNOW_BATCH_SIZE]
+                    try:
+                        payload = {
+                            "host": host,
+                            "key": api_key,
+                            "urlList": batch,
+                        }
+                        key_location = config.get("indexnow_keyLocation", "")
+                        if key_location:
+                            payload["keyLocation"] = key_location
+                        resp = http_requests.post(
+                            INDEXNOW_ENDPOINT,
+                            json=payload,
+                            headers={"Content-Type": "application/json"},
+                            timeout=30,
+                        )
+                        if resp.status_code not in (200, 202):
+                            yield send({"type": "error", "message": f"Bing 返回状态码 {resp.status_code}: {resp.text[:200]}"})
+                            return
                         for url in batch:
-                            if url in existing:
-                                existing[url]["bing_submitted"] = str(date.today())
+                            existing[url]["bing_submitted"] = str(date.today())
                         total_submitted += len(batch)
                         save_urls_to_file(existing, str(urls_path(site)))
                         yield send({"type": "progress", "submitted": total_submitted, "total": len(pending_urls)})
-                    else:
-                        yield send({"type": "error", "message": f"Bing 返回状态码 {resp.status_code}: {resp.text[:200]}"})
+                    except Exception as e:
+                        yield send({"type": "error", "message": f"提交到 Bing 出错: {_safe_error(e)}"})
                         return
-                except Exception as e:
-                    yield send({"type": "error", "message": f"提交到 Bing 出错: {str(e)}"})
-                    return
 
             yield send({"type": "done", "submitted": total_submitted, "message": f"成功提交 {total_submitted} 个 URL 到 Bing"})
         finally:

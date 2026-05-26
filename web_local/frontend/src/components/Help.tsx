@@ -75,7 +75,7 @@ export default function Help() {
             <div className="rounded-lg p-3 mt-2 border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5">
               <p className="font-medium text-slate-800 dark:text-white mb-2">可选 — 启用"从 GSC 同步"</p>
               <p className="mb-2">
-                此功能会检查 Google 在 Search Console 中确认已索引的 URL，并自动标记它们。需要额外一步：
+                此功能会查询 Search Console 中已产生搜索表现的 URL，并将它们标记为无需重复提交。真实索引状态请使用详情页中的深度检测（URL Inspection）。需要额外一步：
               </p>
               <p className="mb-1">
                 1. 在 Google Cloud Console 中，同样启用{" "}
@@ -115,7 +115,7 @@ export default function Help() {
             <ul className="space-y-1 ml-2">
               <li><strong className="text-slate-800 dark:text-white">总网址数</strong> — 在您的 sitemap 中找到的 URL 数量。</li>
               <li><strong className="text-slate-800 dark:text-white">已发送到 Google</strong> — 已提交到 Indexing API 的 URL。</li>
-              <li><strong className="text-slate-800 dark:text-white">GSC 中已索引</strong> — Google Search Console 确认已索引的 URL（由"从 GSC 同步"更新）。</li>
+              <li><strong className="text-slate-800 dark:text-white">Inspection 已收录</strong> — 通过 URL Inspection 验证已进入索引的 URL。</li>
               <li><strong className="text-slate-800 dark:text-white">待处理</strong> — 尚未提交的 URL；它们将在下次运行时发送。</li>
             </ul>
 
@@ -156,11 +156,11 @@ export default function Help() {
               <li><strong className="text-slate-800 dark:text-white">状态</strong> — <span className="text-violet-600 dark:text-violet-400">已发送</span>（已提交到 Google）或 <span className="text-amber-500 dark:text-amber-400">待处理</span>（尚未提交）。</li>
               <li><strong className="text-slate-800 dark:text-white">发送时间</strong> — URL 上次提交到 Indexing API 的日期。</li>
               <li><strong className="text-slate-800 dark:text-white">Lastmod</strong> — sitemap 报告的最后修改日期。当启用 Track lastmod 且此日期更改时，URL 会自动重置为待处理状态。</li>
-              <li><strong className="text-slate-800 dark:text-white">GSC</strong> — <span className="text-emerald-500 dark:text-emerald-400">已索引</span> 表示 Google Search Console 已确认此 URL 已索引。破折号表示尚未同步或未找到。</li>
+              <li><strong className="text-slate-800 dark:text-white">搜索表现</strong> — <span className="text-emerald-500 dark:text-emerald-400">已出现</span> 表示 Search Analytics 已返回此 URL；这不等同于当前收录确认。</li>
             </ul>
 
             <p className="font-medium text-slate-800 dark:text-white mt-2">筛选标签</p>
-            <p>使用 <em>全部</em> / <em>待处理</em> / <em>已索引</em> 标签来缩小列表范围。</p>
+            <p>使用 <em>全部</em> / <em>待处理</em> / <em>已处理</em> 标签来缩小列表范围。</p>
 
             <p className="font-medium text-slate-800 dark:text-white mt-2">批量操作</p>
             <ul className="space-y-2 ml-2">

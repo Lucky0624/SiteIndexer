@@ -6,6 +6,7 @@ lxml>=5.2
 fastapi
 uvicorn[standard]
 python-multipart
+requests>=2.32
 pyinstaller
 pystray
 pillow

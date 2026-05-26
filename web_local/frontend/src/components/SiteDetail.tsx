@@ -57,6 +57,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
 
   const logRef = useRef<HTMLDivElement>(null);
   const esRef = useRef<EventSource | null>(null);
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   function addLog(text: string, kind: InlineLog["kind"] = "info") {
     setPanel((p) => ({ ...p, log: [...p.log, { text, kind }] }));
@@ -67,7 +68,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   }
 
   function loadUrls(filter = urlFilter, page = urlPage, search = urlSearch, category = urlCategory) {
-    api.getUrls(siteName, filter, page, PAGE_SIZE, search, category).then((r) => {
+    api.getUrls(siteName, filter, page, PAGE_SIZE, search, category, activeTab).then((r) => {
       setUrls(r.data);
       setUrlTotal(r.total);
     });
@@ -79,12 +80,15 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   useEffect(() => {
     loadSite();
     loadUrls();
-    return () => esRef.current?.close();
+    return () => {
+      esRef.current?.close();
+      fetchAbortRef.current?.abort();
+    };
   }, [siteName]);
 
   useEffect(() => {
     loadUrls(urlFilter, urlPage, debouncedSearch, urlCategory);
-  }, [urlFilter, urlPage, debouncedSearch, urlCategory]);
+  }, [urlFilter, urlPage, debouncedSearch, urlCategory, activeTab]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -157,7 +161,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         );
       }
       if (ev.type === "done") {
-        addLog(`✓ ${ev.indexed} 已索引 · ${ev.pending} 待处理`, "ok");
+        addLog(`✓ ${ev.indexed} 已提交 · ${ev.pending} 待处理`, "ok");
         setPanel((p) => ({ ...p, running: false }));
         es.close();
         esRef.current = null;
@@ -182,6 +186,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
   function handleStop() {
     esRef.current?.close();
     esRef.current = null;
+    fetchAbortRef.current?.abort();
+    fetchAbortRef.current = null;
     addLog("用户已停止", "error");
     setPanel((p) => ({ ...p, running: false }));
   }
@@ -198,7 +204,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
       const ev = JSON.parse(e.data);
       if (ev.type === "status") addLog(ev.message);
       if (ev.type === "done") {
-        addLog(`✓ ${ev.synced} 个新网址已标记 · GSC 中共 ${ev.total} 个`, "ok");
+        addLog(`✓ ${ev.synced} 个网址存在搜索表现 · GSC 查询共 ${ev.total} 个`, "ok");
         setPanel((p) => ({ ...p, running: false }));
         es.close();
         esRef.current = null;
@@ -277,7 +283,9 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     setPanel({ visible: true, running: true, title: t("detail.inspect"), log: [], progress: null });
 
     try {
-      const response = await api.inspectStream(siteName, urlsList);
+      const controller = new AbortController();
+      fetchAbortRef.current = controller;
+      const response = await api.inspectStream(siteName, urlsList, controller.signal);
       if (!response.ok) {
         addLog("无法启动检测", "error");
         setPanel((p) => ({ ...p, running: false }));
@@ -335,8 +343,10 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         }
       }
     } catch (e: any) {
-      addLog(`✗ ${e.message}`, "error");
+      if (e.name !== "AbortError") addLog(`✗ ${e.message}`, "error");
       setPanel((p) => ({ ...p, running: false }));
+    } finally {
+      fetchAbortRef.current = null;
     }
   }
 
@@ -556,9 +566,9 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
           <AnalyticsCharts
             total={site.urls_total}
-            indexed={site.urls_indexed}
-            pending={site.urls_pending}
-            gscIndexed={site.urls_gsc_indexed ?? 0}
+            indexed={site.urls_submitted ?? site.urls_indexed}
+            pending={Math.max(0, site.urls_total - (site.urls_submitted ?? site.urls_indexed))}
+            gscIndexed={site.urls_inspection_indexed ?? 0}
             crawledNotIndexed={site.urls_crawled_not_indexed ?? 0}
             pendingCrawl={site.urls_pending_crawl ?? 0}
             blocked={site.urls_blocked ?? 0}
@@ -776,7 +786,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         {activeTab === "bing" && (
           <div className="mb-4 text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 rounded-xl border border-amber-200 dark:border-amber-500/20 flex items-center gap-2">
             <span>ℹ️</span>
-            <p><strong>注意：</strong>下面显示的 URL"已发送"状态主要反映 Google 的提交记录。Bing IndexNow 的提交是独立的且不会单独追踪此列表中的每一项的缓存记录。</p>
+            <p><strong>注意：</strong>此页签显示 Bing IndexNow 的提交记录；切换回 Google 页签可查看 Google 通知与 Inspection 状态。</p>
           </div>
         )}
 
@@ -829,12 +839,12 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   />
                 </th>
                 <SortHeader label={t("detail.url")} field="url" />
-                <SortHeader label="GSC 索引状态" field="coverage_state" className="w-44" />
+                <SortHeader label="Inspection 状态" field="coverage_state" className="w-44" />
                 <SortHeader label={t("detail.status")} field="status" className="w-24" />
                 <SortHeader label={t("detail.priority_label")} field="priority" className="w-20" />
                 <SortHeader label={t("detail.sent_time")} field="indexed_at" className="w-28" />
                 <SortHeader label={t("detail.lastmod")} field="lastmod" className="w-24" />
-                {activeTab === "google" && <SortHeader label="GSC" field="gsc_status" className="w-28" />}
+                {activeTab === "google" && <SortHeader label="搜索表现" field="gsc_status" className="w-28" />}
               </tr>
             </thead>
             <tbody>
@@ -886,12 +896,18 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   <td className="px-4 py-2">
                     <span
                       className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                        u.indexed
+                         (activeTab === "bing" ? u.bing_submitted : u.indexed)
                           ? "bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400"
                           : "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400"
                       }`}
                     >
-                      {activeTab === "bing" && u.indexed ? "已缓存/发送" : u.indexed ? t("detail.sent") : t("sites.pending")}
+                       {activeTab === "bing"
+                         ? (u.bing_submitted ? "已提交" : t("sites.pending"))
+                         : u.completed_via === "inspection"
+                           ? "已验证收录"
+                           : u.completed_via === "gsc_performance"
+                             ? "已有搜索表现"
+                             : u.indexed ? t("detail.sent") : t("sites.pending")}
                     </span>
                   </td>
                   <td className="px-4 py-2">
@@ -904,7 +920,9 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                     </span>
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
-                    {u.indexed_at ? new Date(u.indexed_at).toLocaleDateString() : "—"}
+                     {(activeTab === "bing" ? u.bing_submitted : u.indexed_at)
+                       ? new Date(activeTab === "bing" ? u.bing_submitted : u.indexed_at).toLocaleDateString()
+                       : "—"}
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
                     {u.lastmod ?? "—"}
@@ -912,7 +930,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   {activeTab === "google" && (
                   <td className="px-4 py-2">
                     {u.sc_synced_at
-                      ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">{t("detail.indexed")}</span>
+                       ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">已出现</span>
                       : <span className="text-xs text-slate-300 dark:text-white/20">—</span>
                     }
                   </td>
