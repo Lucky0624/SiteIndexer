@@ -66,7 +66,7 @@ export default function SitesList({ navigate }: Props) {
 
       {sites.length === 0 ? (
         <div className="border border-dashed border-slate-300 dark:border-white/10 rounded-2xl p-20 text-center bg-white/60 dark:bg-slate-900/30 backdrop-blur-xl">
-          <div className="text-5xl mb-4">🔍</div>
+          <div className="text-5xl mb-4 text-violet-500">▦</div>
           <p className="text-lg font-medium text-slate-700 dark:text-slate-300 mb-2">{t("sites.empty")}</p>
           <p className="text-sm text-slate-500">{t("sites.empty_hint")}</p>
         </div>

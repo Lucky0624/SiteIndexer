@@ -28,6 +28,41 @@ const COVERAGE_STATE_MAP: Record<string, string> = {
   "Indexed": "已收录",
 };
 
+const INDEX_STATUS_MAP: Record<string, string> = {
+  submitted: "已提交",
+  manual: "手动标记",
+  gsc_seen: "已有搜索表现",
+  indexed: "已验证收录",
+  crawled_not_indexed: "已抓取未收录",
+  pending_crawl: "已发现未收录",
+  blocked: "被阻止",
+  error: "错误",
+  unknown: "待提交",
+};
+
+function getGoogleStatusLabel(u: any, pendingLabel: string) {
+  if (u.index_status && INDEX_STATUS_MAP[u.index_status]) return INDEX_STATUS_MAP[u.index_status];
+  if (u.inspection_indexed || u.completed_via === "inspection") return "已验证收录";
+  if (u.gsc_seen || u.gsc_seen_at || u.sc_synced_at || u.completed_via === "gsc_performance") return "已有搜索表现";
+  if (u.google_submitted || u.google_submitted_at || u.completed_via === "google_api") return "已提交";
+  if (u.manual_completed || u.completed_via === "manual") return "手动标记";
+  return u.indexed ? "已处理" : pendingLabel;
+}
+
+function getGoogleStatusClass(u: any) {
+  const status = u.index_status;
+  if (status === "indexed" || status === "gsc_seen") return "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400";
+  if (status === "submitted" || status === "manual" || u.indexed) return "bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400";
+  if (status === "blocked" || status === "error") return "bg-red-50 text-red-600 dark:bg-red-500/15 dark:text-red-400";
+  return "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400";
+}
+
+function getGoogleSubmittedAt(u: any) {
+  if (u.google_submitted_at) return u.google_submitted_at;
+  if (u.completed_via === "google_api" || u.completed_via === "manual") return u.indexed_at;
+  return null;
+}
+
 export default function SiteDetail({ site: siteName, navigate }: Props) {
   const { t } = useI18n();
   const [site, setSite] = useState<any>(null);
@@ -119,11 +154,11 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
       switch (sortKey) {
         case "url": va = a.url; vb = b.url; break;
         case "category": va = a.category || ""; vb = b.category || ""; break;
-        case "status": va = a.indexed ? 1 : 0; vb = b.indexed ? 1 : 0; break;
+        case "status": va = a.index_status || (a.indexed ? "submitted" : "unknown"); vb = b.index_status || (b.indexed ? "submitted" : "unknown"); break;
         case "priority": { const po: Record<string, number> = { high: 3, normal: 2, low: 1 }; va = po[a.priority] || 2; vb = po[b.priority] || 2; break; }
-        case "indexed_at": va = a.indexed_at || ""; vb = b.indexed_at || ""; break;
+        case "indexed_at": va = getGoogleSubmittedAt(a) || ""; vb = getGoogleSubmittedAt(b) || ""; break;
         case "lastmod": va = a.lastmod || ""; vb = b.lastmod || ""; break;
-        case "gsc_status": va = a.sc_synced_at ? 1 : 0; vb = b.sc_synced_at ? 1 : 0; break;
+        case "gsc_status": va = a.gsc_seen_at || a.sc_synced_at || ""; vb = b.gsc_seen_at || b.sc_synced_at || ""; break;
         case "coverage_state": va = a.coverage_state || ""; vb = b.coverage_state || ""; break;
       }
       if (va < vb) return sortDir === "asc" ? -1 : 1;
@@ -146,6 +181,12 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
       if (ev.type === "connected") addLog("已连接…");
       if (ev.type === "status") addLog(ev.message);
       if (ev.type === "urls_found") addLog(`在 sitemap 中找到 ${ev.count} 个网址`);
+      if (ev.type === "gsc_sync_start") addLog("正在用 GSC 搜索表现批量校准状态…");
+      if (ev.type === "gsc_sync_done") addLog(`GSC 校准完成：本地匹配 ${ev.synced} 个，GSC 返回 ${ev.total} 个页面`, "ok");
+      if (ev.type === "gsc_sync_warning") addLog(`⚠ ${ev.message}`, "error");
+      if (ev.type === "state_plan") {
+        addLog(`状态校准：${ev.skipped} 个已提交/已确认，${ev.pending} 个待提交`);
+      }
       if (ev.type === "plan") addLog(`${ev.pending} 待处理 · ${ev.capacity} 容量`);
       if (ev.type === "quota_exhausted") addLog(`⚠ ${ev.message}`, "error");
       if (ev.type === "indexed") {
@@ -156,7 +197,15 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         }));
         setUrls((prev) =>
           prev.map((u) =>
-            u.url === ev.url ? { ...u, indexed: true, indexed_at: new Date().toISOString() } : u
+            u.url === ev.url ? {
+              ...u,
+              indexed: true,
+              indexed_at: ev.google_submitted_at || new Date().toISOString(),
+              google_submitted: true,
+              google_submitted_at: ev.google_submitted_at || new Date().toISOString(),
+              completed_via: ev.completed_via || "google_api",
+              index_status: ev.index_status || "submitted",
+            } : u
           )
         );
       }
@@ -203,6 +252,32 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     es.onmessage = (e) => {
       const ev = JSON.parse(e.data);
       if (ev.type === "status") addLog(ev.message);
+      if (ev.type === "gsc_plan") {
+        addLog(`本地 URL 中匹配到 ${ev.matched} 个已有搜索表现的页面`);
+        if (ev.matched > 0) {
+          setPanel((p) => ({ ...p, progress: { done: 0, total: ev.matched } }));
+        }
+      }
+      if (ev.type === "gsc_synced") {
+        setPanel((p) => ({
+          ...p,
+          log: [...p.log, { text: `已有搜索表现 — ${ev.url}`, kind: "url" }],
+          progress: { done: ev.done, total: ev.total },
+        }));
+        setUrls((prev) =>
+          prev.map((u) =>
+            u.url === ev.url ? {
+              ...u,
+              indexed: ev.indexed || u.indexed,
+              sc_synced_at: ev.sc_synced_at,
+              gsc_seen: true,
+              gsc_seen_at: ev.gsc_seen_at || ev.sc_synced_at,
+              index_status: ev.index_status || u.index_status || "gsc_seen",
+              completed_via: ev.completed_via || u.completed_via,
+            } : u
+          )
+        );
+      }
       if (ev.type === "done") {
         addLog(`✓ ${ev.synced} 个网址存在搜索表现 · GSC 查询共 ${ev.total} 个`, "ok");
         setPanel((p) => ({ ...p, running: false }));
@@ -324,7 +399,10 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   coverage_state: ev.category,
                   status_category: ev.status_category,
                   verdict: ev.verdict,
-                  indexed: ev.is_indexed || u.indexed,
+                  indexed: ev.indexed ?? (ev.is_indexed || u.indexed),
+                  index_status: ev.index_status || u.index_status,
+                  inspection_indexed_at: ev.inspection_indexed_at || u.inspection_indexed_at,
+                  completed_via: ev.completed_via || u.completed_via,
                   inspected_at: new Date().toISOString().slice(0, 10),
                 } : u
               )
@@ -381,7 +459,10 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
               coverage_state: ev.category,
               status_category: ev.status_category,
               verdict: ev.verdict,
-              indexed: ev.is_indexed || u.indexed,
+              indexed: ev.indexed ?? (ev.is_indexed || u.indexed),
+              index_status: ev.index_status || u.index_status,
+              inspection_indexed_at: ev.inspection_indexed_at || u.inspection_indexed_at,
+              completed_via: ev.completed_via || u.completed_via,
               inspected_at: new Date().toISOString().slice(0, 10),
             } : u
           )
@@ -436,7 +517,15 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
       await api.markIndexed(siteName, [...selected]);
       const now = new Date().toISOString();
       setUrls((prev) =>
-        prev.map((u) => selected.has(u.url) ? { ...u, indexed: true, indexed_at: now } : u)
+        prev.map((u) => selected.has(u.url) ? {
+          ...u,
+          indexed: true,
+          indexed_at: now,
+          manual_completed: true,
+          manual_completed_at: now,
+          completed_via: "manual",
+          index_status: "manual",
+        } : u)
       );
       setSelected(new Set());
       loadSite();
@@ -449,7 +538,23 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     try {
       await api.resetUrls(siteName, [...selected]);
       setUrls((prev) =>
-        prev.map((u) => selected.has(u.url) ? { ...u, indexed: false, indexed_at: null } : u)
+        prev.map((u) => selected.has(u.url) ? {
+          ...u,
+          indexed: false,
+          indexed_at: null,
+          google_submitted: false,
+          google_submitted_at: null,
+          manual_completed: false,
+          manual_completed_at: null,
+          gsc_seen: false,
+          gsc_seen_at: null,
+          sc_synced_at: null,
+          inspection_indexed: false,
+          inspection_indexed_at: null,
+          status_category: null,
+          index_status: "unknown",
+          completed_via: null,
+        } : u)
       );
       setSelected(new Set());
       loadSite();
@@ -462,7 +567,23 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
     setUrlAction(true);
     try {
       await api.resetUrls(siteName, []);
-      setUrls((prev) => prev.map((u) => ({ ...u, indexed: false, indexed_at: null })));
+      setUrls((prev) => prev.map((u) => ({
+        ...u,
+        indexed: false,
+        indexed_at: null,
+        google_submitted: false,
+        google_submitted_at: null,
+        manual_completed: false,
+        manual_completed_at: null,
+        gsc_seen: false,
+        gsc_seen_at: null,
+        sc_synced_at: null,
+        inspection_indexed: false,
+        inspection_indexed_at: null,
+        status_category: null,
+        index_status: "unknown",
+        completed_via: null,
+      })));
       setSelected(new Set());
       loadSite();
     } catch (e: any) { alert(e.message); }
@@ -566,9 +687,10 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
           <AnalyticsCharts
             total={site.urls_total}
-            indexed={site.urls_submitted ?? site.urls_indexed}
-            pending={Math.max(0, site.urls_total - (site.urls_submitted ?? site.urls_indexed))}
+            indexed={site.urls_submit_done ?? site.urls_indexed}
+            pending={site.urls_pending ?? Math.max(0, site.urls_total - (site.urls_submit_done ?? site.urls_indexed))}
             gscIndexed={site.urls_inspection_indexed ?? 0}
+            gscSeen={site.urls_gsc_seen ?? site.urls_gsc_indexed ?? 0}
             crawledNotIndexed={site.urls_crawled_not_indexed ?? 0}
             pendingCrawl={site.urls_pending_crawl ?? 0}
             blocked={site.urls_blocked ?? 0}
@@ -896,18 +1018,16 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   <td className="px-4 py-2">
                     <span
                       className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                         (activeTab === "bing" ? u.bing_submitted : u.indexed)
-                          ? "bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400"
-                          : "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400"
+                         activeTab === "bing"
+                          ? (u.bing_submitted
+                            ? "bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400"
+                            : "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400")
+                          : getGoogleStatusClass(u)
                       }`}
                     >
                        {activeTab === "bing"
                          ? (u.bing_submitted ? "已提交" : t("sites.pending"))
-                         : u.completed_via === "inspection"
-                           ? "已验证收录"
-                           : u.completed_via === "gsc_performance"
-                             ? "已有搜索表现"
-                             : u.indexed ? t("detail.sent") : t("sites.pending")}
+                         : getGoogleStatusLabel(u, t("sites.pending"))}
                     </span>
                   </td>
                   <td className="px-4 py-2">
@@ -920,8 +1040,8 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                     </span>
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
-                     {(activeTab === "bing" ? u.bing_submitted : u.indexed_at)
-                       ? new Date(activeTab === "bing" ? u.bing_submitted : u.indexed_at).toLocaleDateString()
+                     {(activeTab === "bing" ? u.bing_submitted : getGoogleSubmittedAt(u))
+                       ? new Date(activeTab === "bing" ? u.bing_submitted : getGoogleSubmittedAt(u)).toLocaleDateString()
                        : "—"}
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
@@ -929,7 +1049,7 @@ export default function SiteDetail({ site: siteName, navigate }: Props) {
                   </td>
                   {activeTab === "google" && (
                   <td className="px-4 py-2">
-                    {u.sc_synced_at
+                    {u.gsc_seen_at || u.sc_synced_at
                        ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">已出现</span>
                       : <span className="text-xs text-slate-300 dark:text-white/20">—</span>
                     }

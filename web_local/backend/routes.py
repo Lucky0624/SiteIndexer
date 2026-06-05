@@ -33,6 +33,8 @@ from siteindexer.utils import (
     migrate_urls, filter_urls, sync_urls, build_indexing_plan,
     update_quota_batch, get_quota_remaining, QUOTA_LIMIT,
     DEFAULT_SKIP_EXTENSIONS, GlobalTaskLock, sanitize_error_message,
+    normalize_url_state, should_skip_google_submit, derive_index_status,
+    is_google_submitted, is_manual_completed, is_gsc_seen, is_inspection_indexed,
 )
 from siteindexer.sitemaps import SitemapFetchError, fetch_urls_from_sitemap_recursive
 from siteindexer.indexing import index_url
@@ -74,16 +76,33 @@ def save_history(history: list) -> None:
         save_json_atomic(history[-HISTORY_MAX_RECORDS:], str(history_path()), indent=2)
 
 
-def record_history(site_name: str, indexed: int, errors: int, duration_s: float):
+def record_history(
+    site_name: str,
+    indexed: int,
+    errors: int,
+    duration_s: float,
+    *,
+    operation: str = "google_submit",
+    details: Optional[list[dict]] = None,
+    synced: int = 0,
+    checked: int = 0,
+    skipped: int = 0,
+):
     with _history_lock:
         history = load_history()
         history.append({
+            "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
             "site": site_name,
+            "operation": operation,
             "date": str(date.today()),
             "time": datetime.now().strftime("%H:%M:%S"),
             "indexed": indexed,
+            "synced": synced,
+            "checked": checked,
+            "skipped": skipped,
             "errors": errors,
             "duration_s": round(duration_s, 1),
+            "details": details or [],
         })
         save_json_atomic(history[-HISTORY_MAX_RECORDS:], str(history_path()), indent=2)
 
@@ -103,6 +122,43 @@ def index_url_with_retry(url, creds_full, index, proxy=None):
             if attempt < MAX_RETRY:
                 time.sleep(RETRY_DELAY_SECONDS * attempt)
     raise last_err
+
+
+def _is_transient_network_error(message: str) -> bool:
+    lower = message.lower()
+    transient_markers = (
+        "10060",
+        "timed out",
+        "timeout",
+        "connection timed out",
+        "failed to establish a new connection",
+        "servernotfounderror",
+        "connection reset",
+        "connection aborted",
+        "unexpected_eof",
+        "eof occurred",
+        "temporarily unavailable",
+    )
+    return any(marker in lower for marker in transient_markers)
+
+
+def inspect_url_with_retry(url, site_url, creds_full, proxy=None):
+    """Wrap URL Inspection with retry for transient network/proxy failures."""
+    last_err = None
+    for attempt in range(1, MAX_RETRY + 1):
+        try:
+            return inspect_url(url, site_url, creds_full, proxy=proxy)
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            lower = msg.lower()
+            if "400" in msg or "403" in msg or "429" in msg or "quota" in lower:
+                raise
+            if not _is_transient_network_error(msg):
+                raise
+            if attempt < MAX_RETRY:
+                time.sleep(RETRY_DELAY_SECONDS * attempt)
+    raise Exception(sanitize_error_message(f"URL Inspection 连接失败，已重试 {MAX_RETRY} 次: {last_err}"))
 
 
 def get_site(name: str) -> dict:
@@ -153,6 +209,128 @@ def _safe_error(error: Exception) -> str:
     return sanitize_error_message(str(error))
 
 
+def _inspection_error_message(error: Exception) -> str:
+    msg = _safe_error(error)
+    lower = msg.lower()
+    if _is_transient_network_error(msg):
+        hints = [
+            "这是连接 Google URL Inspection API 时的网络超时，不代表这个页面本身未收录或页面有问题。",
+            "请检查当前网络或代理节点是否能稳定访问 searchconsole.googleapis.com；如果站点配置了凭据专用代理，也要确认该代理仍可用。",
+            "GSC 搜索表现同步和 URL Inspection 是不同接口；同步可用时，运行索引仍会走 GSC 快速校准，深度检测失败不会影响正常提交。",
+        ]
+        return f"{msg}\n\n" + "\n".join(hints)
+
+    if "inspection api error" not in lower:
+        return msg
+
+    hints = [
+        "深度检测调用的是 Google URL Inspection API，和 GSC 搜索表现同步不是同一个接口；GSC 同步可用不代表深度检测一定可用。",
+        "请确认 Google Cloud 项目已启用 Search Console API，服务账户已加入对应 Search Console 属性，且被检测 URL 属于该 GSC 属性范围。",
+    ]
+    if "403" in msg:
+        hints.append("如果是 403，通常是服务账户权限不足、属性不匹配，或 URL 不在当前 site_url 属性下。")
+    if "400" in msg:
+        hints.append("如果是 400，通常是 site_url 格式不正确，或 inspectionUrl 与 siteUrl 不匹配。")
+    if "429" in msg or "quota" in lower:
+        hints.append("如果是 429/配额错误，需要等待 URL Inspection API 配额恢复。")
+    return f"{msg}\n\n" + "\n".join(hints)
+
+
+def _google_done(data: dict) -> bool:
+    return should_skip_google_submit(normalize_url_state(data))
+
+
+def _refresh_url_state(entry: dict) -> dict:
+    return normalize_url_state(entry)
+
+
+def _mark_google_submitted(entry: dict, today: str) -> None:
+    entry["google_submitted_at"] = today
+    entry["indexed_at"] = today
+    entry["completed_via"] = "google_api"
+    _refresh_url_state(entry)
+
+
+def _mark_manual_completed(entry: dict, today: str) -> None:
+    entry["manual_completed_at"] = today
+    entry["indexed_at"] = today
+    entry["completed_via"] = "manual"
+    _refresh_url_state(entry)
+
+
+def _mark_gsc_seen(entry: dict, today: str) -> None:
+    entry["gsc_seen_at"] = today
+    entry["sc_synced_at"] = today
+    if not is_inspection_indexed(entry):
+        entry["completed_via"] = "gsc_performance"
+    _refresh_url_state(entry)
+
+
+def _reset_google_state(entry: dict) -> None:
+    for key in (
+        "indexed_at",
+        "google_submitted_at",
+        "manual_completed_at",
+        "completed_via",
+        "sc_synced_at",
+        "gsc_seen_at",
+        "category",
+        "coverage_state",
+        "status_category",
+        "inspected_at",
+        "inspection_indexed_at",
+        "category_updated_at",
+        "verdict",
+        "last_crawl_time",
+        "page_fetch_state",
+        "robots_txt_state",
+    ):
+        entry.pop(key, None)
+    entry["indexed"] = False
+    entry["index_status"] = derive_index_status(entry)
+
+
+def _sync_gsc_seen(site: dict, existing: dict, visible_urls, today: str) -> tuple[int, int, list[dict]]:
+    creds_file = site["credentials"][0]
+    cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
+    gsc_pages = fetch_indexed_pages(site["site_url"], str(creds_path(creds_file)), proxy=cred_proxy)
+    gsc_normalized = {u.rstrip("/"): u for u in gsc_pages}
+    matched_urls = [url for url in visible_urls if url.rstrip("/") in gsc_normalized]
+    history_details = []
+
+    for url in matched_urls:
+        _mark_gsc_seen(existing[url], today)
+        history_details.append({
+            "url": url,
+            "action": "gsc_synced",
+            "source": "search_analytics",
+            "status": "seen_in_search_performance",
+        })
+
+    return len(matched_urls), len(gsc_pages), history_details
+
+
+def _apply_inspection_result(existing: dict, url: str, result: dict, today: str) -> bool:
+    entry = existing[url]
+    entry["category"] = result.get("coverageState", "Unknown")
+    entry["coverage_state"] = result.get("coverageState", "Unknown")
+    entry["category_updated_at"] = today
+    entry["verdict"] = result.get("verdict")
+    entry["status_category"] = result.get("status_category", "unknown")
+    entry["last_crawl_time"] = result.get("lastCrawlTime")
+    entry["page_fetch_state"] = result.get("pageFetchState")
+    entry["robots_txt_state"] = result.get("robotsTxtState")
+    entry["inspected_at"] = today
+
+    if result.get("is_indexed"):
+        entry["inspection_indexed_at"] = today
+        entry["completed_via"] = "inspection"
+        _refresh_url_state(entry)
+        return True
+    _refresh_url_state(entry)
+    return False
+
+
 def quota_for_site(site: dict) -> list[dict]:
     result = []
     quota_data = load_json(str(DATA_DIR / "quota.json"))
@@ -174,20 +352,12 @@ def site_stats(site: dict) -> dict:
     visible = filter_urls({url: data.get("lastmod") for url, data in stored_urls.items()}, site)
     urls = {url: stored_urls[url] for url in visible}
     total = len(urls)
-    processed = sum(1 for u in urls.values() if u.get("indexed"))
-    submitted = sum(
-        1 for u in urls.values()
-        if u.get("completed_via") in ("google_api", "manual")
-        or (
-            u.get("indexed")
-            and not u.get("completed_via")
-            and not u.get("sc_synced_at")
-            and u.get("status_category") != "indexed"
-        )
-    )
-    gsc_seen = sum(1 for u in urls.values() if u.get("sc_synced_at"))
+    processed = sum(1 for u in urls.values() if _google_done(u))
+    submitted = sum(1 for u in urls.values() if is_google_submitted(u) or is_manual_completed(u))
+    gsc_seen = sum(1 for u in urls.values() if is_gsc_seen(u))
     inspected = sum(1 for u in urls.values() if u.get("inspected_at"))
-    inspection_indexed = sum(1 for u in urls.values() if u.get("status_category") == "indexed")
+    inspection_indexed = sum(1 for u in urls.values() if is_inspection_indexed(u))
+    confirmed = sum(1 for u in urls.values() if is_gsc_seen(u) or is_inspection_indexed(u))
     crawled_not_indexed = sum(1 for u in urls.values() if u.get("status_category") == "crawled_not_indexed")
     pending_crawl = sum(1 for u in urls.values() if u.get("status_category") == "pending_crawl")
     blocked = sum(1 for u in urls.values() if u.get("status_category") == "blocked")
@@ -205,9 +375,12 @@ def site_stats(site: dict) -> dict:
         "credentials": site.get("credentials", []),
         "urls_total": total,
         "urls_indexed": processed,
+        "urls_submit_done": processed,
         "urls_submitted": submitted,
         "urls_gsc_indexed": gsc_seen,
+        "urls_gsc_seen": gsc_seen,
         "urls_inspection_indexed": inspection_indexed,
+        "urls_index_confirmed": confirmed,
         "urls_pending": pending,
         "urls_inspected": inspected,
         "urls_crawled_not_indexed": crawled_not_indexed,
@@ -304,13 +477,14 @@ def list_urls(
     for url, data in urls.items():
         if url not in visible:
             continue
+        data = _refresh_url_state(data)
         
         if category != "all" and _get_category(url, site_url) != category:
             continue
             
-        processed = data.get("indexed", False)
+        processed = _google_done(data)
         channel_done = bool(data.get("bing_submitted")) if channel == "bing" else processed
-        gsc_seen = bool(data.get("sc_synced_at"))
+        gsc_seen = is_gsc_seen(data)
         if filter == "pending" and channel_done:
             continue
         if filter == "indexed" and not channel_done:
@@ -321,15 +495,24 @@ def list_urls(
             "url": url,
             "indexed": processed,
             "indexed_at": data.get("indexed_at"),
+            "google_submitted": is_google_submitted(data),
+            "google_submitted_at": data.get("google_submitted_at"),
+            "manual_completed": is_manual_completed(data),
+            "manual_completed_at": data.get("manual_completed_at"),
             "completed_via": data.get("completed_via"),
             "lastmod": data.get("lastmod"),
             "sc_synced_at": data.get("sc_synced_at"),
+            "gsc_seen": is_gsc_seen(data),
+            "gsc_seen_at": data.get("gsc_seen_at") or data.get("sc_synced_at"),
             "bing_submitted": data.get("bing_submitted"),
             "priority": data.get("priority", "normal"),
             "category": data.get("category") or _get_category(url, site_url),
             "category_updated_at": data.get("category_updated_at"),
             "verdict": data.get("verdict"),
             "status_category": data.get("status_category"),
+            "index_status": data.get("index_status") or derive_index_status(data),
+            "inspection_indexed": is_inspection_indexed(data),
+            "inspection_indexed_at": data.get("inspection_indexed_at"),
             "last_crawl_time": data.get("last_crawl_time"),
             "page_fetch_state": data.get("page_fetch_state"),
             "robots_txt_state": data.get("robots_txt_state"),
@@ -457,9 +640,7 @@ def mark_indexed(name: str, body: dict):
         today = str(date.today())
         for url in urls_list:
             if url in existing:
-                existing[url]["indexed"] = True
-                existing[url]["indexed_at"] = today
-                existing[url]["completed_via"] = "manual"
+                _mark_manual_completed(existing[url], today)
         save_urls_to_file(existing, str(urls_path(site)))
     return {"ok": True}
 
@@ -473,9 +654,7 @@ def reset_urls(name: str, body: dict):
         targets = urls_list if urls_list else list(existing.keys())
         for url in targets:
             if url in existing:
-                existing[url]["indexed"] = False
-                existing[url].pop("indexed_at", None)
-                existing[url].pop("completed_via", None)
+                _reset_google_state(existing[url])
         save_urls_to_file(existing, str(urls_path(site)))
     return {"ok": True}
 
@@ -499,20 +678,22 @@ def run_selected_stream(name: str, body: dict):
         try:
             existing = load_urls(site)
             today = str(date.today())
+            history_details = []
 
             plan = build_indexing_plan(site["credentials"])
             total_capacity = sum(cap for _, cap in plan)
             visible = filter_urls({url: data.get("lastmod") for url, data in existing.items()}, site)
-            pending_urls = [u for u in urls_to_index if u in visible][:total_capacity]
+            pending_urls = [u for u in urls_to_index if u in visible and not _google_done(existing[u])][:total_capacity]
 
-            yield send({"type": "plan", "pending": len(urls_to_index), "capacity": total_capacity})
+            yield send({"type": "plan", "pending": len(pending_urls), "capacity": total_capacity})
 
             if not plan or not pending_urls:
-                yield send({"type": "done", "indexed": 0, "pending": len(urls_to_index)})
+                yield send({"type": "done", "indexed": 0, "pending": len(pending_urls)})
                 return
 
             global_i = 0
             url_cursor = 0
+            run_start = time.time()
 
             for creds_file, capacity in plan:
                 batch = pending_urls[url_cursor: url_cursor + capacity]
@@ -525,14 +706,26 @@ def run_selected_stream(name: str, body: dict):
                     try:
                         cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
                         index_url(url, creds_full, global_i + 1, proxy=cred_proxy)
-                        existing[url]["indexed"] = True
-                        existing[url]["indexed_at"] = today
-                        existing[url]["completed_via"] = "google_api"
+                        _mark_google_submitted(existing[url], today)
+                        history_details.append({
+                            "url": url,
+                            "action": "submitted",
+                            "source": "google_api",
+                            "status": "submitted",
+                        })
                         global_i += 1
                         batch_indexed += 1
                         save_urls_to_file(existing, str(urls_path(site)))
                         update_quota_batch(creds_file, 1)
-                        yield send({"type": "indexed", "url": url, "done": global_i, "total": len(pending_urls)})
+                        yield send({
+                            "type": "indexed",
+                            "url": url,
+                            "done": global_i,
+                            "total": len(pending_urls),
+                            "google_submitted_at": today,
+                            "index_status": existing[url].get("index_status"),
+                            "completed_via": existing[url].get("completed_via"),
+                        })
                     except Exception as e:
                         msg = str(e)
                         if "429" in msg or "quota" in msg.lower():
@@ -553,7 +746,15 @@ def run_selected_stream(name: str, body: dict):
 
                 url_cursor += batch_indexed
 
-            yield send({"type": "done", "indexed": global_i, "pending": len(urls_to_index) - global_i})
+            record_history(
+                name,
+                global_i,
+                0,
+                time.time() - run_start,
+                operation="selected_submit",
+                details=history_details,
+            )
+            yield send({"type": "done", "indexed": global_i, "pending": len(pending_urls) - global_i})
 
         except Exception as e:
             yield send({"type": "error", "message": _safe_error(e)})
@@ -587,27 +788,52 @@ def run_stream(name: str):
             sync_urls(existing, filtered, raw, site)
             save_urls_to_file(existing, str(urls_path(site)))
 
+            global_i = 0
+            error_count = 0
+            run_start = time.time()
+            history_details = []
+            gsc_synced = 0
+            checked_count = 0
+
+            if site.get("site_url") and site.get("credentials"):
+                yield send({"type": "gsc_sync_start"})
+                try:
+                    gsc_synced, gsc_total, _gsc_details = _sync_gsc_seen(site, existing, filtered, today)
+                    if gsc_synced > 0:
+                        save_urls_to_file(existing, str(urls_path(site)))
+                    yield send({"type": "gsc_sync_done", "synced": gsc_synced, "total": gsc_total})
+                except Exception as e:
+                    yield send({
+                        "type": "gsc_sync_warning",
+                        "message": f"GSC 同步不可用，已继续使用本地状态提交: {_safe_error(e)}",
+                    })
+
             # Build plan
             plan = build_indexing_plan(site["credentials"])
-            pending_urls = [u for u in filtered if not existing[u].get("indexed")]
+            pending_urls = [u for u in filtered if not _google_done(existing[u])]
             total_capacity = sum(cap for _, cap in plan)
-            total_to_index = min(len(pending_urls), total_capacity)
+            skipped_indexed = max(0, len(filtered) - len(pending_urls))
 
+            yield send({
+                "type": "state_plan",
+                "total": len(filtered),
+                "skipped": skipped_indexed,
+                "pending": len(pending_urls),
+                "gsc_synced": gsc_synced,
+            })
             yield send({"type": "plan", "pending": len(pending_urls), "capacity": total_capacity})
 
             if not plan:
                 yield send({"type": "done", "indexed": 0, "pending": len(pending_urls)})
                 return
 
-            global_i = 0
-            error_count = 0
-            run_start = time.time()
-
-            # Sort pending_urls by priority (high first)
+            # Sort pending URLs by priority (high first)
             def url_priority(u):
                 p = existing.get(u, {}).get("priority", "normal")
                 return {"high": 0, "normal": 1, "low": 2}.get(p, 1)
             pending_urls.sort(key=url_priority)
+
+            total_to_index = min(len(pending_urls), total_capacity)
 
             for creds_file, capacity in plan:
                 if not pending_urls:
@@ -623,9 +849,13 @@ def run_stream(name: str):
                     try:
                         cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
                         index_url_with_retry(url, creds_full, global_i + 1, proxy=cred_proxy)
-                        existing[url]["indexed"] = True
-                        existing[url]["indexed_at"] = today
-                        existing[url]["completed_via"] = "google_api"
+                        _mark_google_submitted(existing[url], today)
+                        history_details.append({
+                            "url": url,
+                            "action": "submitted",
+                            "source": "google_api",
+                            "status": "submitted",
+                        })
                         global_i += 1
                         batch_indexed += 1
                         unsaved_count += 1
@@ -634,7 +864,15 @@ def run_stream(name: str):
                         if unsaved_count >= BATCH_SAVE_INTERVAL:
                             save_urls_to_file(existing, str(urls_path(site)))
                             unsaved_count = 0
-                        yield send({"type": "indexed", "url": url, "done": global_i, "total": total_to_index})
+                        yield send({
+                            "type": "indexed",
+                            "url": url,
+                            "done": global_i,
+                            "total": total_to_index,
+                            "google_submitted_at": today,
+                            "index_status": existing[url].get("index_status"),
+                            "completed_via": existing[url].get("completed_via"),
+                        })
                     except Exception as e:
                         msg = str(e)
                         error_count += 1
@@ -649,25 +887,32 @@ def run_stream(name: str):
                         elif "UNEXPECTED_EOF_WHILE_READING" in msg or "EOF occurred" in msg:
                             yield send({"type": "error", "message": f"网络连接意外中断 (SSL EOF) - 请检查代理节点是否稳定。当前代理: {'已配置' if cred_proxy else '无'}"})
                             save_urls_to_file(existing, str(urls_path(site)))
-                            record_history(name, global_i, error_count, time.time() - run_start)
+                            record_history(name, global_i, error_count, time.time() - run_start, details=history_details, synced=gsc_synced, checked=checked_count, skipped=skipped_indexed)
                             return
                         elif "ServerNotFoundError" in msg or "Failed to establish a new connection" in msg:
                             yield send({"type": "error", "message": f"无法连接到 Google 服务器 - 请检查网络或代理设置。当前代理: {'已配置' if cred_proxy else '无'}"})
                             save_urls_to_file(existing, str(urls_path(site)))
-                            record_history(name, global_i, error_count, time.time() - run_start)
+                            record_history(name, global_i, error_count, time.time() - run_start, details=history_details, synced=gsc_synced, checked=checked_count, skipped=skipped_indexed)
                             return
                         else:
                             yield send({"type": "error", "message": f"提交出错: {_safe_error(e)}"})
                             save_urls_to_file(existing, str(urls_path(site)))
-                            record_history(name, global_i, error_count, time.time() - run_start)
+                            history_details.append({
+                                "url": url,
+                                "action": "error",
+                                "source": "google_api",
+                                "status": "error",
+                                "detail": _safe_error(e),
+                            })
+                            record_history(name, global_i, error_count, time.time() - run_start, details=history_details, synced=gsc_synced, checked=checked_count, skipped=skipped_indexed)
                             return
 
                 # Flush remaining unsaved at end of each credential batch
                 if unsaved_count > 0:
                     save_urls_to_file(existing, str(urls_path(site)))
 
-            final_pending = sum(1 for u in filtered if not existing[u].get("indexed"))
-            record_history(name, global_i, error_count, time.time() - run_start)
+            final_pending = sum(1 for u in filtered if not _google_done(existing[u]))
+            record_history(name, global_i, error_count, time.time() - run_start, details=history_details, synced=gsc_synced, checked=checked_count, skipped=skipped_indexed)
             yield send({"type": "done", "indexed": global_i, "pending": final_pending})
 
         except Exception as e:
@@ -690,6 +935,7 @@ def sync_gsc_stream(name: str):
             return f"data: {json.dumps(event)}\n\n"
 
         try:
+            run_start = time.time()
             if not site.get("site_url"):
                 yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
                 return
@@ -698,27 +944,37 @@ def sync_gsc_stream(name: str):
                 return
 
             yield send({"type": "status", "message": "正在连接到 Google Search Console..."})
-            creds_file = site["credentials"][0]
-            cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
-            gsc_pages = fetch_indexed_pages(site["site_url"], str(creds_path(creds_file)), proxy=cred_proxy)
-            yield send({"type": "status", "message": f"在 GSC 搜索表现中找到 {len(gsc_pages)} 个页面。"})
-
-            gsc_normalized = {u.rstrip("/"): u for u in gsc_pages}
-
             existing = load_urls(site)
+            visible = filter_urls({url: data.get("lastmod") for url, data in existing.items()}, site)
             today = str(date.today())
-            synced = 0
-            for url in existing:
-                if url.rstrip("/") in gsc_normalized:
-                    existing[url]["sc_synced_at"] = today
-                    synced += 1
-                    if not existing[url].get("indexed"):
-                        existing[url]["indexed"] = True
-                        existing[url]["indexed_at"] = today
-                        existing[url]["completed_via"] = "gsc_performance"
+            synced, gsc_total, history_details = _sync_gsc_seen(site, existing, visible, today)
+            yield send({"type": "status", "message": f"在 GSC 搜索表现中找到 {gsc_total} 个页面。"})
+            yield send({"type": "gsc_plan", "matched": synced, "total": gsc_total})
+            for synced_i, detail in enumerate(history_details, start=1):
+                url = detail["url"]
+                yield send({
+                    "type": "gsc_synced",
+                    "url": url,
+                    "done": synced_i,
+                    "total": synced,
+                    "sc_synced_at": today,
+                    "gsc_seen_at": today,
+                    "indexed": existing[url].get("indexed", False),
+                    "index_status": existing[url].get("index_status"),
+                    "completed_via": existing[url].get("completed_via"),
+                })
 
             save_urls_to_file(existing, str(urls_path(site)))
-            yield send({"type": "done", "synced": synced, "total": len(gsc_pages)})
+            record_history(
+                name,
+                0,
+                0,
+                time.time() - run_start,
+                operation="gsc_sync",
+                details=history_details,
+                synced=synced,
+            )
+            yield send({"type": "done", "synced": synced, "total": gsc_total})
         except Exception as e:
             yield send({"type": "error", "message": _safe_error(e)})
         finally:
@@ -743,6 +999,7 @@ def inspect_stream(name: str, body: InspectRequest):
             return f"data: {json.dumps(event)}\n\n"
 
         try:
+            run_start = time.time()
             if not site.get("site_url"):
                 yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
                 return
@@ -759,30 +1016,38 @@ def inspect_stream(name: str, body: InspectRequest):
             
             count = 0
             indexed_count = 0
+            error_count = 0
             unsaved_count = 0
+            history_details = []
             for url in urls_to_inspect:
                 if url not in existing:
                     continue
                 
                 cred_proxy = site.get("credential_proxies", {}).get(creds_file) or site.get("proxy") or get_config().get("proxy")
-                res = inspect_url(url, site["site_url"], creds_full, proxy=cred_proxy)
+                try:
+                    res = inspect_url_with_retry(url, site["site_url"], creds_full, proxy=cred_proxy)
+                except Exception as e:
+                    error_count += 1
+                    history_details.append({
+                        "url": url,
+                        "action": "error",
+                        "source": "inspection",
+                        "status": "error",
+                        "detail": _inspection_error_message(e),
+                    })
+                    yield send({"type": "error", "message": f"检测 {url} 出错: {_inspection_error_message(e)}"})
+                    break
                 
-                existing[url]["category"] = res.get("coverageState", "Unknown")
-                existing[url]["coverage_state"] = res.get("coverageState", "Unknown")
-                existing[url]["category_updated_at"] = today
-                existing[url]["verdict"] = res.get("verdict")
-                existing[url]["status_category"] = res.get("status_category", "unknown")
-                existing[url]["last_crawl_time"] = res.get("lastCrawlTime")
-                existing[url]["page_fetch_state"] = res.get("pageFetchState")
-                existing[url]["robots_txt_state"] = res.get("robotsTxtState")
-                existing[url]["inspected_at"] = today
-
-                if res.get("is_indexed"):
-                    existing[url]["indexed"] = True
-                    if not existing[url].get("indexed_at"):
-                        existing[url]["indexed_at"] = today
-                    existing[url]["completed_via"] = "inspection"
+                is_indexed = _apply_inspection_result(existing, url, res, today)
+                if is_indexed:
                     indexed_count += 1
+                history_details.append({
+                    "url": url,
+                    "action": "inspection_indexed" if is_indexed else "inspection_checked",
+                    "source": "inspection",
+                    "status": res.get("status_category", "unknown"),
+                    "detail": res.get("coverageState", "Unknown"),
+                })
                 
                 count += 1
                 unsaved_count += 1
@@ -799,15 +1064,29 @@ def inspect_stream(name: str, body: InspectRequest):
                     "page_fetch_state": res.get("pageFetchState"),
                     "robots_txt_state": res.get("robotsTxtState"),
                     "is_indexed": res.get("is_indexed", False),
+                    "indexed": existing[url].get("indexed", False),
+                    "index_status": existing[url].get("index_status"),
+                    "inspection_indexed_at": existing[url].get("inspection_indexed_at"),
+                    "completed_via": existing[url].get("completed_via"),
                     "done": count,
                     "total": len(urls_to_inspect),
                 })
             
             if unsaved_count > 0:
                 save_urls_to_file(existing, str(urls_path(site)))
+            record_history(
+                name,
+                0,
+                error_count,
+                time.time() - run_start,
+                operation="inspection",
+                details=history_details,
+                checked=count,
+                skipped=indexed_count,
+            )
             yield send({"type": "done", "count": count, "indexed": indexed_count})
         except Exception as e:
-            yield send({"type": "error", "message": _safe_error(e)})
+            yield send({"type": "error", "message": _inspection_error_message(e)})
         finally:
             lock.release()
 
@@ -824,6 +1103,7 @@ def inspect_pending_stream(name: str):
             return f"data: {json.dumps(event)}\n\n"
 
         try:
+            run_start = time.time()
             if not site.get("site_url"):
                 yield send({"type": "error", "message": "此站点未配置 Google Search Console 属性。"})
                 return
@@ -833,7 +1113,7 @@ def inspect_pending_stream(name: str):
 
             existing = load_urls(site)
             visible = filter_urls({url: data.get("lastmod") for url, data in existing.items()}, site)
-            pending_urls = [url for url in visible if not existing[url].get("indexed")]
+            pending_urls = [url for url in visible if not _google_done(existing[url])]
 
             if not pending_urls:
                 yield send({"type": "done", "count": 0, "indexed": 0, "message": "没有待检测的 URL。"})
@@ -848,28 +1128,24 @@ def inspect_pending_stream(name: str):
 
             count = 0
             indexed_count = 0
+            error_count = 0
             unsaved_count = 0
+            history_details = []
 
             for url in pending_urls:
                 try:
-                    res = inspect_url(url, site["site_url"], creds_full, proxy=cred_proxy)
+                    res = inspect_url_with_retry(url, site["site_url"], creds_full, proxy=cred_proxy)
 
-                    existing[url]["category"] = res.get("coverageState", "Unknown")
-                    existing[url]["coverage_state"] = res.get("coverageState", "Unknown")
-                    existing[url]["category_updated_at"] = today
-                    existing[url]["verdict"] = res.get("verdict")
-                    existing[url]["status_category"] = res.get("status_category", "unknown")
-                    existing[url]["last_crawl_time"] = res.get("lastCrawlTime")
-                    existing[url]["page_fetch_state"] = res.get("pageFetchState")
-                    existing[url]["robots_txt_state"] = res.get("robotsTxtState")
-                    existing[url]["inspected_at"] = today
-
-                    if res.get("is_indexed"):
-                        existing[url]["indexed"] = True
-                        if not existing[url].get("indexed_at"):
-                            existing[url]["indexed_at"] = today
-                        existing[url]["completed_via"] = "inspection"
+                    is_indexed = _apply_inspection_result(existing, url, res, today)
+                    if is_indexed:
                         indexed_count += 1
+                    history_details.append({
+                        "url": url,
+                        "action": "inspection_indexed" if is_indexed else "inspection_checked",
+                        "source": "inspection",
+                        "status": res.get("status_category", "unknown"),
+                        "detail": res.get("coverageState", "Unknown"),
+                    })
 
                     count += 1
                     unsaved_count += 1
@@ -884,23 +1160,45 @@ def inspect_pending_stream(name: str):
                         "verdict": res.get("verdict"),
                         "status_category": res.get("status_category", "unknown"),
                         "is_indexed": res.get("is_indexed", False),
+                        "indexed": existing[url].get("indexed", False),
+                        "index_status": existing[url].get("index_status"),
+                        "inspection_indexed_at": existing[url].get("inspection_indexed_at"),
+                        "completed_via": existing[url].get("completed_via"),
                         "done": count,
                         "total": len(pending_urls),
                     })
                 except Exception as e:
                     msg = str(e)
+                    error_count += 1
+                    history_details.append({
+                        "url": url,
+                        "action": "error",
+                        "source": "inspection",
+                        "status": "error",
+                        "detail": _inspection_error_message(e),
+                    })
                     if "429" in msg or "quota" in msg.lower():
                         yield send({"type": "error", "message": f"API 配额已用尽，已检测 {count} 个 URL。"})
                         break
-                    yield send({"type": "error", "message": f"检测 {url} 出错: {_safe_error(e)}"})
+                    yield send({"type": "error", "message": f"检测 {url} 出错: {_inspection_error_message(e)}"})
                     break
 
             if unsaved_count > 0:
                 save_urls_to_file(existing, str(urls_path(site)))
 
+            record_history(
+                name,
+                0,
+                error_count,
+                time.time() - run_start,
+                operation="inspection_pending",
+                details=history_details,
+                checked=count,
+                skipped=indexed_count,
+            )
             yield send({"type": "done", "count": count, "indexed": indexed_count})
         except Exception as e:
-            yield send({"type": "error", "message": _safe_error(e)})
+            yield send({"type": "error", "message": _inspection_error_message(e)})
         finally:
             lock.release()
 

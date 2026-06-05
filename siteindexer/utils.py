@@ -177,14 +177,107 @@ def normalize_config(config):
     return config
 
 
+def _first_value(*values):
+    for value in values:
+        if value:
+            return value
+    return None
+
+
+def is_google_submitted(entry: dict) -> bool:
+    return bool(entry.get("google_submitted_at")) or entry.get("completed_via") == "google_api"
+
+
+def is_manual_completed(entry: dict) -> bool:
+    return bool(entry.get("manual_completed_at")) or entry.get("completed_via") == "manual"
+
+
+def is_gsc_seen(entry: dict) -> bool:
+    return bool(entry.get("gsc_seen_at") or entry.get("sc_synced_at"))
+
+
+def is_inspection_indexed(entry: dict) -> bool:
+    return bool(entry.get("inspection_indexed_at")) or entry.get("status_category") == "indexed"
+
+
+def should_skip_google_submit(entry: dict) -> bool:
+    if is_google_submitted(entry) or is_manual_completed(entry) or is_gsc_seen(entry) or is_inspection_indexed(entry):
+        return True
+
+    # Legacy data only had indexed=true after successful Google submission.
+    return bool(entry.get("indexed"))
+
+
+def derive_index_status(entry: dict) -> str:
+    status_category = entry.get("status_category")
+    if status_category == "indexed" or entry.get("inspection_indexed_at"):
+        return "indexed"
+    if status_category in {"crawled_not_indexed", "pending_crawl", "blocked", "error"}:
+        return status_category
+    if is_gsc_seen(entry):
+        return "gsc_seen"
+    if is_google_submitted(entry):
+        return "submitted"
+    if is_manual_completed(entry):
+        return "manual"
+    return "unknown"
+
+
+def normalize_url_state(entry: dict) -> dict:
+    """Normalize legacy URL state into explicit submission and index signals."""
+    if not isinstance(entry, dict):
+        entry = {"indexed": bool(entry), "lastmod": None}
+
+    completed_via = entry.get("completed_via")
+    indexed_at = entry.get("indexed_at")
+
+    if completed_via == "google_api" and indexed_at:
+        entry.setdefault("google_submitted_at", indexed_at)
+    if completed_via == "manual" and indexed_at:
+        entry.setdefault("manual_completed_at", indexed_at)
+    if entry.get("sc_synced_at"):
+        entry.setdefault("gsc_seen_at", entry.get("sc_synced_at"))
+    if entry.get("gsc_seen_at"):
+        entry.setdefault("sc_synced_at", entry.get("gsc_seen_at"))
+    if entry.get("status_category") == "indexed":
+        entry.setdefault(
+            "inspection_indexed_at",
+            _first_value(entry.get("inspected_at"), entry.get("category_updated_at"), indexed_at),
+        )
+
+    if entry.get("indexed") and not any(
+        (
+            entry.get("google_submitted_at"),
+            entry.get("manual_completed_at"),
+            entry.get("gsc_seen_at"),
+            entry.get("inspection_indexed_at"),
+        )
+    ):
+        if completed_via == "gsc_performance":
+            entry.setdefault("gsc_seen_at", _first_value(entry.get("sc_synced_at"), indexed_at))
+            if entry.get("gsc_seen_at"):
+                entry.setdefault("sc_synced_at", entry.get("gsc_seen_at"))
+        elif completed_via == "inspection":
+            entry.setdefault("inspection_indexed_at", _first_value(entry.get("inspected_at"), indexed_at))
+        elif completed_via == "manual":
+            entry.setdefault("manual_completed_at", indexed_at)
+        else:
+            if indexed_at:
+                entry.setdefault("google_submitted_at", indexed_at)
+
+    if entry.get("google_submitted_at"):
+        entry.setdefault("indexed_at", entry.get("google_submitted_at"))
+
+    entry["indexed"] = should_skip_google_submit(entry)
+    entry["index_status"] = derive_index_status(entry)
+    return entry
+
+
 def migrate_urls(data):
-    """将旧版 {url: bool} 格式转换为 {url: {"indexed": bool, "lastmod": None}}。"""
+    """将旧版 URL 状态转换为统一字段，同时兼容旧的 indexed 语义。"""
     migrated = {}
     for url, value in data.items():
-        if isinstance(value, bool):
-            migrated[url] = {"indexed": value, "lastmod": None}
-        else:
-            migrated[url] = value
+        migrated[url] = normalize_url_state(value)
     return migrated
 
 
@@ -295,7 +388,7 @@ def sync_urls(existing_urls, sitemap_urls, raw_urls, site_config):
     new_count = 0
     for url, lastmod in sitemap_urls.items():
         if url not in existing_urls:
-            existing_urls[url] = {"indexed": False, "lastmod": lastmod}
+            existing_urls[url] = normalize_url_state({"indexed": False, "lastmod": lastmod})
             new_count += 1
 
     del_count = 0
@@ -314,13 +407,23 @@ def sync_urls(existing_urls, sitemap_urls, raw_urls, site_config):
                 entry["indexed"] = False
                 entry["lastmod"] = new_lastmod
                 entry.pop("indexed_at", None)
+                entry.pop("google_submitted_at", None)
+                entry.pop("manual_completed_at", None)
                 entry.pop("completed_via", None)
                 entry.pop("bing_submitted", None)
                 entry.pop("sc_synced_at", None)
+                entry.pop("gsc_seen_at", None)
                 entry.pop("category", None)
                 entry.pop("coverage_state", None)
                 entry.pop("status_category", None)
                 entry.pop("inspected_at", None)
+                entry.pop("inspection_indexed_at", None)
+                entry.pop("category_updated_at", None)
+                entry.pop("verdict", None)
+                entry.pop("last_crawl_time", None)
+                entry.pop("page_fetch_state", None)
+                entry.pop("robots_txt_state", None)
+                entry["index_status"] = "unknown"
                 reset_count += 1
 
     return {"new_count": new_count, "del_count": del_count, "reset_count": reset_count}

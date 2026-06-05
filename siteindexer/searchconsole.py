@@ -5,7 +5,7 @@ from urllib.parse import quote
 import httplib2
 from oauth2client.service_account import ServiceAccountCredentials
 
-from siteindexer.constants import GSC_ROW_LIMIT, GSC_MONTHS_BACK
+from siteindexer.constants import GSC_ROW_LIMIT, GSC_MONTHS_BACK, GSC_HTTP_TIMEOUT
 from siteindexer.utils import APP_LOGGER, parse_proxy_info, sanitize_error_message
 
 SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
@@ -34,7 +34,7 @@ INSPECTION_BLOCKED_STATES = {
 
 
 def _make_http_from_credentials(credentials, proxy=None):
-    return credentials.authorize(httplib2.Http(proxy_info=parse_proxy_info(proxy)))
+    return credentials.authorize(httplib2.Http(proxy_info=parse_proxy_info(proxy), timeout=GSC_HTTP_TIMEOUT))
 
 
 def _make_http(credentials_json: str, proxy=None):
@@ -194,6 +194,8 @@ def inspect_url(url: str, site_url: str, credentials_json: str, proxy=None) -> d
     http = _make_http(credentials_json, proxy=proxy)
 
     endpoint = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
+    if site_url.startswith("http") and not site_url.endswith("/"):
+        site_url = site_url + "/"
 
     body = json.dumps({
         "inspectionUrl": url,

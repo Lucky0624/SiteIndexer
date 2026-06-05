@@ -5,16 +5,17 @@ interface Props {
   indexed: number;
   pending: number;
   gscIndexed: number;
+  gscSeen?: number;
   crawledNotIndexed?: number;
   pendingCrawl?: number;
   blocked?: number;
   inspected?: number;
 }
 
-export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, crawledNotIndexed = 0, pendingCrawl = 0, blocked = 0, inspected = 0 }: Props) {
+export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, gscSeen = 0, crawledNotIndexed = 0, pendingCrawl = 0, blocked = 0, inspected = 0 }: Props) {
   const submitData = [
-    { name: '已发送到 Google', value: indexed, fill: '#8b5cf6' },
-    { name: '未发送 / 待处理', value: pending, fill: '#334155' },
+    { name: '已提交 / 已确认', value: indexed, fill: '#8b5cf6' },
+    { name: '未知 / 待提交', value: pending, fill: '#334155' },
   ];
 
   const gscData = [
@@ -36,7 +37,7 @@ export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, c
   return (
     <div className="flex flex-col md:flex-row gap-6">
       <div className="flex-1 h-64 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-2xl p-4 shadow-xl">
-        <h3 className="text-sm font-medium text-slate-800 dark:text-slate-300 mb-2">提交状态分布</h3>
+        <h3 className="text-sm font-medium text-slate-800 dark:text-slate-300 mb-2">处理状态分布</h3>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
@@ -87,11 +88,15 @@ export default function AnalyticsCharts({ total, indexed, pending, gscIndexed, c
       <div className="flex flex-col gap-3 w-full md:w-48">
         <div className="bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-2xl p-5 shadow-xl flex-1 flex flex-col justify-center relative overflow-hidden">
           <p className="text-3xl font-bold font-mono text-slate-800 dark:text-white mb-1">{((indexed / total) * 100).toFixed(1)}%</p>
-          <p className="text-sm text-slate-500 dark:text-slate-400">已提交比例</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">已处理比例</p>
         </div>
         <div className="bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-2xl p-5 shadow-xl flex-1 flex flex-col justify-center relative overflow-hidden">
           <p className="text-3xl font-bold font-mono text-emerald-600 dark:text-emerald-400 mb-1">{gscIndexed}</p>
           <p className="text-sm text-slate-500 dark:text-slate-400">Inspection 已收录</p>
+        </div>
+        <div className="bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-2xl p-5 shadow-xl flex-1 flex flex-col justify-center relative overflow-hidden">
+          <p className="text-3xl font-bold font-mono text-blue-600 dark:text-blue-400 mb-1">{gscSeen}</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">GSC 已出现</p>
         </div>
       </div>
     </div>
